@@ -1,0 +1,761 @@
+# FATURA label -> DocuXray InvoiceData schema path map
+#
+# AUTHORED BLIND: every row below was written from FATURA label semantics read against the
+# Field(description=...) text in ai/extraction/new_schema.py. No DocuXray model output was
+# inspected while writing this file. Do not amend a row after seeing scores without recording
+# the change and its reason in CHANGELOG at the bottom.
+#
+# status:  mapped | unmapped | not_annotated
+# review:  accepted | PENDING | disputed        <- reviewers set this
+# absence_authoritative:
+#   true  = when a template's label set omits this label, the field is genuinely absent on the
+#           page, so a model emission there is a hallucination candidate.
+#   false = we cannot tell; field is excluded from both recall and hallucination denominators.
+#
+# Target paths are relative to invoiceOutputData (i.e. DocumentExtractionResult.invoiceOutputData).
+
+version: 1.0-frozen
+dataset: FATURA (modified_annotations, 10000 files, 50 templates x 200)
+schema_ref: "ai/extraction/new_schema.py :: InvoiceData"
+leaf_paths_ref: schema/invoice_leaf_paths.tsv   # 72 paths, generated
+
+# =============================================================================
+# HIGH CONFIDENCE — expect these to be accepted without discussion
+# =============================================================================
+
+mappings:
+  - label: NUMBER
+    labels: [NUMBER]
+    status: mapped
+    confidence: high
+    coverage: 8800
+    review: accepted   # Naveen, 2026-09-01
+    targets:
+      - {path: invoiceInfo.documentNumber, parser: passthrough_strip}
+    absence_authoritative: true
+    note: "Values like 'INV/30-14/832', '0649-071'. Strict-normalised exact match."
+
+  - label: DATE
+    labels: [DATE]
+    status: mapped
+    confidence: high
+    coverage: 9800
+    review: accepted   # Naveen, 2026-09-01
+    targets:
+      - {path: invoiceInfo.issueDate,    parser: passthrough_strip,  role: format_fidelity}
+      - {path: invoiceInfo.issueDateISO, parser: date_to_iso,        role: fact}
+    absence_authoritative: true
+    note: >
+      Uniformly DD-Mon-YYYY (e.g. '20-Mar-2008') so there is no DD/MM vs MM/DD ambiguity.
+      Score ISO as the fact; score the raw form as format fidelity only. Never both in one
+      denominator. 2 known GT errors (see known_gt_errors.json).
+
+  - label: DUE_DATE
+    labels: [DUE_DATE]
+    status: mapped
+    confidence: high
+    coverage: 5798
+    review: accepted   # Naveen, 2026-09-01
+    targets:
+      - {path: invoiceInfo.dueDate,    parser: passthrough_strip, role: format_fidelity}
+      - {path: invoiceInfo.dueDateISO, parser: date_to_iso,       role: fact}
+    absence_authoritative: true
+
+  - label: PO_NUMBER
+    labels: [PO_NUMBER]
+    status: mapped
+    confidence: high
+    coverage: 1400
+    review: accepted   # Naveen, 2026-09-01
+    targets:
+      - {path: invoiceInfo.purchaseOrderNumber, parser: passthrough_strip}
+    absence_authoritative: true
+    note: "Bare 1-2 digit integers ('04', '35', '98'). Short strings — a near-miss is a full miss."
+
+  - label: TOTAL
+    labels: [TOTAL]
+    status: mapped
+    confidence: high
+    coverage: 8000
+    review: accepted   # Naveen, 2026-09-01
+    targets:
+      - {path: totals.totalIncludingTax, parser: money_amount}
+      - {path: currency,                                parser: money_currency}
+    absence_authoritative: true
+    note: >
+      '734.33 EUR'. Currency suffix is EUR | USD | $ | none. '$' is ambiguous (USD vs CAD vs other)
+      — see currency_policy below. 1 known GT error (Template18_Instance4).
+
+  - label: SELLER.Name
+    labels: [SELLER.Name]
+    status: mapped
+    confidence: high
+    coverage: 6800     # non-null; label present in all 10000
+    review: accepted   # Naveen, 2026-09-01
+    targets: [{path: parties.seller.name, parser: passthrough_strip}]
+    absence_authoritative: true
+    effective_n: 50
+    headline_eligible: false
+    note: "TEMPLATE CONSTANT — identical across all 200 instances of every template. 50 distinct values in the corpus."
+
+  - label: SELLER.Email
+    labels: [SELLER.Email]
+    status: mapped
+    confidence: high
+    coverage: 4400
+    review: accepted   # Naveen, 2026-09-01
+    targets: [{path: parties.seller.email, parser: passthrough_strip}]
+    absence_authoritative: true
+    effective_n: 50
+    headline_eligible: false
+
+  - label: BUYER.Name
+    labels: [BUYER.Name]
+    status: mapped
+    confidence: high
+    coverage: 6200
+    review: accepted   # Naveen, 2026-09-01
+    targets: [{path: parties.customer.name, parser: passthrough_strip}]
+    absence_authoritative: true
+    collision: see party_role_policy
+
+  - label: BUYER.Email
+    labels: [BUYER.Email]
+    status: mapped
+    confidence: high
+    coverage: 6200
+    review: accepted   # Naveen, 2026-09-01
+    targets: [{path: parties.customer.email, parser: passthrough_strip}]
+    absence_authoritative: true
+    collision: see party_role_policy
+
+  - label: BUYER.Tel
+    labels: [BUYER.Tel]
+    status: mapped
+    confidence: high
+    coverage: 6200
+    review: accepted   # Naveen, 2026-09-01
+    targets: [{path: parties.customer.phone, parser: phone_normalise}]
+    absence_authoritative: true
+    collision: see party_role_policy
+
+  - label: SEND_TO.Name / .Email / .Tel
+    labels: [SEND_TO.Name, SEND_TO.Email, SEND_TO.Tel]
+    status: mapped
+    confidence: high
+    coverage: 1800
+    review: accepted   # Naveen, 2026-09-01
+    targets:
+      - {path: parties.shipTo.name,  parser: passthrough_strip, from: SEND_TO.Name}
+      - {path: parties.shipTo.email, parser: passthrough_strip, from: SEND_TO.Email}
+      - {path: parties.shipTo.phone, parser: phone_normalise,   from: SEND_TO.Tel}
+    absence_authoritative: true
+
+  - label: DISCOUNT
+    labels: [DISCOUNT]
+    status: mapped
+    confidence: high
+    coverage: 2400
+    review: accepted   # Naveen, 2026-09-01
+    targets:
+      - {path: totals.discountPercentage, parser: pct_in_parens}   # '(1.85%)' -> 1.85
+      - {path: totals.discountTotal,      parser: money_abs}        # '(-) 13.42' -> 13.42
+    absence_authoritative: true
+    note: >
+      RESOLVED BY EVIDENCE: GT stores discount as POSITIVE MAGNITUDE.
+      ai/postprocessing/invoice_postprocessor.py::_normalize_totals converts a negative
+      discountTotal to its absolute value and emits a correction event. Storing GT as -13.42
+      would make arm B (postprocessed) score worse than arm A on every discounted invoice,
+      purely as a sign-convention artifact. Discount amount == SUB_TOTAL x pct in 1800/1800 files,
+      so the percentage and amount are internally consistent and both are safe to score.
+
+  # =============================================================================
+  # COMPOSITE — one GT label expands to several schema paths via a parser
+  # =============================================================================
+
+  - label: TAX
+    labels: [TAX]
+    status: mapped
+    confidence: high
+    coverage: 3800
+    review: accepted   # Naveen, 2026-09-01
+    targets:
+      - {path: totals.taxName,                     parser: tax_name}    # 'VAT (3.88%): 28.18 EUR' -> 'VAT'
+      - {path: totals.taxPercentage, parser: tax_pct}     # -> 3.88
+      - {path: totals.taxAmount,     parser: tax_amount}  # -> 28.18
+      - {path: currency,                           parser: money_currency}
+    absence_authoritative: true
+    note: >
+      Tax amount == SUB_TOTAL x rate in only 2234/3199 checkable files (70%). The source is NOT
+      arithmetically self-consistent, so GT cannot be cross-validated by arithmetic and the usual
+      QA sweep for GT errors is unavailable on this dataset. This does not affect DocuXray, whose
+      prompts extract verbatim printed values and explicitly forbid summing ("DO NOT calculate,
+      infer, or sum individual tax line items" — total.py:189).
+
+  - label: SUB_TOTAL
+    labels: [SUB_TOTAL]
+    status: mapped
+    confidence: high          # Q1 RESOLVED 2026-09-01: totals.subtotal, per Naveen
+    coverage: 6797
+    review: accepted   # Naveen, 2026-09-01
+    targets:
+      - {path: totals.subtotal, parser: money_amount}
+      - {path: currency,                      parser: money_currency}
+    rejected_alternative: totals.totalExcludingTax   # considered and declined, Q1
+    absence_authoritative: true
+
+  - label: "GST(n%)  [regex: ^GST\\((\\d+(?:\\.\\d+)?)%\\)$]"
+    labels: []          # matched by label_regex, not by a literal name
+    label_regex: "^GST\\(\\s*(?P<rate>\\d+(?:\\.\\d+)?)\\s*%\\)$"
+    status: mapped
+    confidence: MEDIUM        # <-- arguable, see review sheet Q3
+    coverage: 1800
+    review: accepted   # Naveen, 2026-09-01
+    targets:
+      - {path: totals.taxName,                     parser: literal, value: "GST"}
+      - {path: totals.taxPercentage, parser: rate_from_key}   # rate lives in the KEY
+      - {path: totals.taxAmount,     parser: money_amount}
+    absence_authoritative: true
+    exclusion: multi_rate_files      # see multi_rate_tax_policy
+    note: >
+      SCHEMA GAP. 200 files carry FIVE simultaneous GST rates (1%, 5%, 12%, 18%, 20%).
+      InvoiceData.Totals has SCALAR taxName / taxAmount / taxPercentage and cannot represent
+      multiple tax lines. (ReceiptTotals.taxes IS a list — invoices are the gap.)
+      Those 200 files are excluded from tax scoring entirely. The remaining 1600 are single-rate
+      and map cleanly. 200 files carry both TAX and a GST label — also excluded.
+
+  - label: AMOUNT_DUE
+    labels: [AMOUNT_DUE]
+    status: mapped
+    confidence: high          # was arguable; RESOLVED BY EVIDENCE
+    coverage: 799
+    review: accepted   # Naveen, 2026-09-01
+    targets:
+      - {path: totals.totalIncludingTax, parser: money_amount}
+      - {path: currency,                                parser: money_currency}
+    absence_authoritative: true
+    dedupe_with: TOTAL
+    note: >
+      RESOLVED: AMOUNT_DUE equals TOTAL in 399/399 files where both appear. It is a restatement
+      of the same fact, not a separate balance, so it maps to totalIncludingTax and must NOT be
+      double-counted where TOTAL is also present. Rejected alternatives:
+      postPaymentRemainingCurrentBalance and grandTotalIncludingPreviousBalances — both imply a
+      prior-balance or part-payment semantics FATURA never expresses.
+      Some values carry a 'BALANCE_DUE : ' prefix that must be stripped (see known_gt_errors.json).
+
+  # =============================================================================
+  # ADDRESSES — needs a policy decision, see review sheet Q2
+  # =============================================================================
+
+  - label: SELLER.Address
+    labels: [SELLER.Address]
+    status: mapped
+    confidence: MEDIUM
+    coverage: 8200
+    review: accepted   # Naveen, 2026-09-01
+    targets:
+      - {path: parties.seller.addressStructured, parser: address_whole, match: anls_0.8_merged}
+    excluded_paths:
+      - parties.seller.addressStructured.city
+      - parties.seller.addressStructured.state
+      - parties.seller.addressStructured.postal_code
+      - parties.seller.addressStructured.country
+    absence_authoritative: true
+    effective_n: 50
+    headline_eligible: false
+    note: see address_policy
+
+  - label: BILL_TO.Name / .Email / .Tel
+    labels: [BILL_TO.Name, BILL_TO.Email, BILL_TO.Tel]
+    status: mapped
+    confidence: high
+    coverage: 1600
+    review: accepted   # Naveen, 2026-09-01
+    targets:
+      - {path: parties.customer.name,  parser: passthrough_strip, from: BILL_TO.Name}
+      - {path: parties.customer.email, parser: passthrough_strip, from: BILL_TO.Email}
+      - {path: parties.customer.phone, parser: phone_normalise,   from: BILL_TO.Tel}
+    absence_authoritative: true
+    collision: see party_role_policy
+    note: >
+      BILL_TO stands in for BUYER only when BUYER is absent (1200 files BILL_TO-only, 200 with
+      BILL_TO+SEND_TO). In the 200 files carrying BOTH BILL_TO and BUYER the schema's single
+      customer slot cannot hold two distinct parties, so parties.customer.* is excluded for
+      those documents. Added in 0.1.2 — the contract check found the code resolving BILL_TO
+      while the map did not name it.
+
+  - label: BUYER.Address / BILL_TO.Address / SEND_TO.Address
+    labels: [BUYER.Address, BILL_TO.Address, SEND_TO.Address]
+    status: mapped
+    confidence: MEDIUM
+    review: accepted   # Naveen, 2026-09-01
+    targets:
+      - {path: parties.customer.addressStructured, parser: address_whole, match: anls_0.8_merged, from: BUYER.Address}
+      - {path: parties.shipTo.addressStructured,   parser: address_whole, match: anls_0.8_merged, from: SEND_TO.Address}
+    consumed_paths: [ "*.addressStructured.city", "*.addressStructured.state", "*.addressStructured.postal_code", "*.addressStructured.country" ]
+    absence_authoritative: true
+    note: see address_policy
+
+  # =============================================================================
+  # LOW-INFORMATION — mapped but barred from headlines
+  # =============================================================================
+
+  - label: NOTE
+    labels: [NOTE]
+    status: mapped
+    confidence: high          # RESOLVED 2026-09-01, see note_policy
+    coverage: 5200
+    review: accepted   # Naveen + Sandeep, 2026-09-01
+    targets: [{path: invoiceInfo.noteText, parser: passthrough_strip, match: token_recall_0.9_merged}]
+    absence_authoritative: true
+    effective_n: 5
+    headline_eligible: false
+    note: >
+      Exactly 5 distinct values across all 5200 files ('Thank you for your business!',
+      'This order is shipped through blue dart courier', 'All payments to be made in cash...',
+      'Thank you for choosing us!', 'Total payment due in 14 days.'). Template-baked boilerplate.
+      Carries almost no information; map it if you want the coverage row, but it can never
+      support a claim.
+
+  # =============================================================================
+  # UNMAPPED — no defensible schema home. Each reason is published verbatim.
+  # =============================================================================
+
+  - label: SELLER.Site / BUYER.Site / BILL_TO.Site / SEND_TO.Site
+    labels: [SELLER.Site, BUYER.Site, BILL_TO.Site, SEND_TO.Site]
+    status: unmapped
+    reason: SCHEMA_GAP
+    coverage: 10000 / 6200 / 1600 / 1800
+    review: accepted   # Naveen, 2026-09-01
+    note: >
+      Party has name, addressStructured, phone, email — there is NO website field anywhere in
+      the schema. This is a product gap, not a benchmark decision. See review sheet Q5.
+
+  - label: GSTIN / GSTIN_SELLER / GSTIN_BUYER
+    labels: [GSTIN, GSTIN_SELLER, GSTIN_BUYER]
+    status: unmapped
+    reason: SCHEMA_GAP
+    coverage: 1400 / 1000 / 600
+    review: accepted   # Naveen, 2026-09-01
+    note: >
+      No tax-identifier field exists on Party or InvoiceInfo. Benchmarking_plan.md 4.2 lists
+      "tax IDs" under the Parties reporting group, but new_schema.py does not implement them.
+      Separately: the bare GSTIN (1400 files) does not name its party, so even with a field it
+      could not be attributed without inventing a fact. All 3 variants are template constants
+      (effective n = 7 / 5 / 3). GSTIN_SELLER additionally carries the printed label in 200/200
+      of its files. See review sheet Q5.
+
+  - label: PAYMENT_DETAILS (Bank Name / Branch Name / Bank Account Number / Bank Swift Code)
+    labels: [PAYMENT_DETAILS]
+    status: unmapped
+    reason: SCHEMA_GAP
+    coverage: 2600
+    review: accepted   # Naveen, 2026-09-01
+    note: >
+      No bank or remittance-details group exists in InvoiceData. Standard invoice content.
+      Branch Name and Bank Swift Code are template constants (13/13 templates); Bank Name and
+      Bank Account Number vary within 12 of 13. See review sheet Q5.
+
+  - label: TOTAL_WORDS
+    labels: [TOTAL_WORDS]
+    status: unmapped
+    reason: NO_SCHEMA_FIELD_AND_NO_PRODUCT_VALUE
+    coverage: 4000
+    review: accepted   # Naveen, 2026-09-01
+    note: "Amount in words ('seven hundred and thirty-four point three three'). No target field, no downstream use."
+
+  - label: TITLE
+    labels: [TITLE]
+    status: unmapped
+    reason: DIFFERENT_METRIC
+    coverage: 7400
+    review: accepted   # Naveen, 2026-09-01
+    note: >
+      Only 3 non-null values ('TAX INVOICE' 2512, 'INVOICE' 2456, 'COMMERCIAL INVOICE' 2432) and
+      null in 2600. This is a document-type signal, not an extracted field. If wanted, it belongs
+      in the classifier metric with its own denominator, not in extraction accuracy.
+
+  - label: CONDITIONS
+    labels: [CONDITIONS]
+    status: unmapped
+    reason: SOURCE_TRUNCATED_AND_SEMANTICALLY_WRONG_TARGET
+    coverage: 2400
+    review: accepted   # Naveen, 2026-09-01
+    note: >
+      Every value is the same truncated boilerplate: 'Terms and Conditions\nwill be charged if
+      payment is not made within the due date.' — the source has lost the leading clause (the
+      late-fee rate). Mapping it to paymentTerms.raw_text would also fight the schema, whose
+      description restricts that field to explicit payment-timing language and forbids inferring
+      terms from a due date. Excluded.
+
+  - label: LINE_ITEMS_TEXT
+    labels: [LINE_ITEMS_TEXT]
+    status: unmapped
+    reason: CONVERSION_ARTIFACT
+    coverage: 5539
+    review: accepted   # Naveen, 2026-09-01
+    note: "A raw text blob produced by fatura_to_keyvalue.py, not a source field."
+
+  - label: Image_Name / _line_items_status
+    labels: [Image_Name, _line_items_status]
+    status: unmapped
+    reason: METADATA
+    review: accepted
+
+  # =============================================================================
+  # LINE ITEMS
+  # =============================================================================
+
+  - label: LINE_ITEMS
+    labels: [LINE_ITEMS]
+    status: research_only     # captured, NEVER scored -- see line_items_policy
+    confidence: high          # high confidence that it must not be scored
+    coverage: 4386            # of which _line_items_status == ok: 3363
+    review: accepted   # Naveen, 2026-09-01
+    scoreable_subset: none
+    targets:
+      - {path: "lineItems[].description", parser: passthrough_strip, match: anls_0.8}
+      - {path: "lineItems[].quantity", parser: money_amount}
+      - {path: "lineItems[].unitPrice", parser: money_amount}   # GT key is 'price'
+    excluded_paths:
+      - "lineItems[].itemCode"
+      - "lineItems[].unitOfMeasure"
+      - "lineItems[].discountAmount"
+      - "lineItems[].discountPercent"
+      - "lineItems[].lineTaxAmount"
+      - "lineItems[].lineTaxPercent"
+      - "lineItems[].lineTotalExcludingTax"
+      - "lineItems[].lineTotalIncludingTax"
+      - "lineItems[].serviceDate"
+      - "lineItems[].serviceDateISO"
+    absence_authoritative: false
+    headline_eligible: false
+    note: >
+      GT rows carry only description / quantity / price. Everything else in LineItem is
+      unannotated. The 3363 'ok' files concentrate in simple-table templates (2, 9, 26, 28 parse
+      100%; templates 5, 11, 14, 16, 20, 25, 34, 39, 45, 49 parse 0%), so this is a metric over
+      roughly 15 easy layouts. Per the agreed decision it ships caveated and never in a headline.
+      absence_authoritative is false because a missing row is a parser failure, not evidence the
+      page had no row — so unrecovered rows cannot count against the model.
+
+  # =============================================================================
+  # NOT ANNOTATED BY FATURA — excluded from both recall and hallucination denominators
+  # =============================================================================
+
+not_annotated:
+  reason: >
+    FATURA's label vocabulary does not name these, so we cannot distinguish "absent from the
+    page" from "present but unlabelled". Excluded from every denominator.
+  paths:
+    - parties.seller.phone            # no SELLER_TEL label exists in the source, so a phone
+                                      # on the page would be unlabelled — we cannot tell
+    - parties.*.addressStructured.city
+    - parties.*.addressStructured.state
+    - parties.*.addressStructured.postal_code
+    - parties.*.addressStructured.country
+    - invoiceInfo.customerNumber
+    - invoiceInfo.paymentTerms.raw_text
+    - invoiceInfo.paymentTerms.term_type
+    - invoiceInfo.paymentTerms.due_days
+    - invoiceInfo.paymentTerms.day_of_month_due
+    - invoiceInfo.category             # subjective; report separately per Benchmarking_plan 4.3
+    - invoiceInfo.categoryReasoning    # free text, no GT
+    - totals.otherCharges[].key
+    - totals.otherCharges[].value
+    - totals.deposit
+    - totals.previousUnpaidBalances
+    - totals.postPaymentRemainingCurrentBalance
+    - totals.totalExcludingTax
+    - totals.grandTotalIncludingPreviousBalances
+    - shippingInfo.carrier
+    - shippingInfo.deliveryDate
+    - shippingInfo.deliveryDateISO
+    - shippingInfo.trackingNumber
+    - invoiceStatus                    # no paid/unpaid GT; derived by _derive_invoice_status
+    - isOverflowPage                   # all FATURA pages are single-page
+    - isOverflowPageReasoning
+    - applyTaxAfterDiscount
+
+# =============================================================================
+# POLICIES
+# =============================================================================
+
+party_role_policy:
+  rule: |
+    BUYER   -> parties.customer
+    BILL_TO -> parties.customer   (only when BUYER is absent)
+    SEND_TO -> parties.shipTo
+  collision: |
+    200 files carry BOTH BILL_TO and BUYER. The schema has a single `customer` slot, so the two
+    GT roles cannot both be scored. For those 200 files, parties.customer.* is marked
+    not_annotated and excluded. 200/10000 = 2%; recorded rather than resolved by guesswork.
+  observed_combinations:
+    BUYER only: 5600
+    BILL_TO only: 1200
+    SEND_TO only: 1200
+    BUYER + SEND_TO: 400
+    BILL_TO + SEND_TO: 200
+    BILL_TO + BUYER: 200      # <-- the collision
+    none: 1200
+
+address_policy:
+  decision: |
+    Q2 RESOLVED 2026-09-01 (Naveen): MERGE the model's addressStructured sub-fields
+    (address, city, state, postal_code, country -- in that order) into a single string and
+    compare it against the whole GT block at ANLS >= 0.8, punctuation-insensitive on both sides.
+    The target path is therefore the OBJECT `parties.<role>.addressStructured`, not the
+    `.address` leaf, and the five components are CONSUMED by the merge rather than marked
+    not-annotated. A model that correctly routes the city into `city` is neither rewarded nor
+    punished for the split; only the address content is scored.
+    Punctuation is dropped because the merge inserts commas the printed block does not have --
+    a formatting artifact of the merge, not a difference in the address.
+  superseded_proposal: |
+    GT gives one multi-line block ('16424 Timothy Mission\nMarkville, AK 58294 US').
+    The schema splits it into address / city / state / postal_code / country.
+    Proposal: score parties.*.addressStructured.address against the WHOLE GT block using
+    ANLS >= 0.8, and mark city / state / postal_code / country not_annotated.
+  rejected_alternative: |
+    Parse the GT block into components ourselves. Rejected: our parser would then define
+    correctness, which reintroduces the circularity this map exists to avoid.
+  optional_addition: |
+    A containment check — every GT address token appears somewhere across the model's five
+    address components — measures component coverage without our parser choosing the split.
+    Cheap to add; report as a secondary line if reviewers want it.
+
+currency_policy:
+  observed_suffixes: {EUR: 6478, USD: 6446, "$": 6472, none: 2400}
+  rule: |
+    EUR -> EUR, USD -> USD. The bare '$' is ambiguous (USD / CAD / AUD / SGD) and FATURA states
+    no locale, so files whose only currency evidence is '$' have `currency` marked
+    not_annotated. Recorded as a published limitation, never guessed to USD.
+
+null_semantics:
+  rule: |
+    Three states per Benchmarking_plan.md 6.
+    (i)   label present in this file          -> scoreable, counts toward recall
+    (ii)  label in this TEMPLATE's vocabulary but absent from this file
+                                              -> scoreable absence; a model emission here is a
+                                                 hallucination candidate
+    (iii) label not in this template's vocabulary, or in `not_annotated`
+                                              -> excluded from every denominator
+    Correct-null rate is published as its own line and never folded into a headline.
+  verification_required: |
+    Before the pilot, eyeball 5 documents per label where the label is absent, and confirm the
+    field really is absent from the rendered page. Record the per-label result here.
+
+numeric_value_policy:
+  wire_shape_differs_by_stage: |
+    arm A (raw extraction)   {"originalValue": "1,234.56"}
+    arm B / C (postprocessed) {"originalValue": "1,234.56", "normalizedValue": 1234.56}
+    new_schema.NumericValue declares ONLY originalValue and sets extra="forbid", so the model
+    cannot emit normalizedValue. The postprocessor adds it
+    (ai/postprocessing/_common.py::_normalize_numeric_value).
+  rule: |
+    Numeric target paths in this map are LOGICAL (totals.totalIncludingTax), never a sub-key.
+    The value is read with normalize.numeric_from_field(), whose source is set by
+    normalize.NUMERIC_SOURCE.
+
+    NUMERIC_SOURCE = "originalValue"  (the decision, 2026-09-01)
+
+    Why originalValue and not normalizedValue:
+      * It is present at EVERY stage. normalizedValue exists only after postprocessing, so
+        pinning to it would score arm A as zero on every amount -- a wire-format artifact, not
+        a fact about the model.
+      * The postprocessor only .strip()s originalValue, so arms A, B and C are scored on the
+        IDENTICAL field. Any arm-to-arm difference is therefore a real pipeline difference.
+      * It is the verbatim printed string, which is what the ground truth also records. The
+        two sides are the same kind of evidence.
+      * FATURA's amounts are unambiguous ('1,098.21 USD' -- comma thousands, dot decimal), so
+        production's separator-disambiguation logic is not doing work we need here. On a
+        dataset with European '1.234,56' formatting this decision should be revisited.
+  comparison: |
+    ALWAYS numeric at 2dp, never string. The same amount is printed '1,234.56' on one template
+    and '1234.56 EUR' on another; a string match would score that as wrong. No tolerance --
+    a 1p mismatch on a total is a mismatch.
+  reported_separately: |
+    Two secondary lines, counted but never folded into a headline:
+      * fallback rate -- how often originalValue was null or unparseable and normalizedValue
+        was used instead. On a postprocessed arm this is the postprocessor's
+        number-parsing failure rate (it sets normalizedValue=None and raises
+        number_unparseable when it cannot read the printed string).
+      * parse disagreement -- how often a field carried both keys and they differed at 2dp,
+        i.e. this harness's parser and production's parser read the same printed string
+        differently. Counted, never silently resolved: it is a finding about one of them.
+
+arithmetic_note: |
+  FATURA invoices are NOT arithmetically self-consistent. TOTAL does not equal
+  SUB_TOTAL + TAX - DISCOUNT in 5582 of 5597 checkable files, and TAX equals SUB_TOTAL x rate in
+  only 70% of files. Consequences:
+   1. GT cannot be cross-validated by arithmetic, so the usual sweep for GT errors is unavailable.
+   2. Any future arithmetic-reconciliation feature must be DISABLED or excluded for the FATURA
+      run, and the exclusion disclosed. As of this SHA, DocuXray extracts verbatim and does not
+      reconcile (total.py:189 forbids summing; invoice_postprocessor._normalize_totals only
+      normalises format and discount sign), so no exclusion is needed today.
+
+frozen_system_policy:
+  rule: |
+    THE MEASURED SYSTEM IS FROZEN. No change is made to docuxary_backend, docuxray_ai_backend,
+    ai/extraction/extraction_prompts.py, ai/judge/core/judge_prompts.py, ai/extraction/
+    new_schema.py or any postprocessing/refinement code for the purposes of this benchmark.
+    We are measuring the shipped product as it stands, not a version improved to score better.
+    Naveen, 2026-09-01.
+  consequences_accepted: |
+    * The four schema gaps (party website, party tax ID, bank/remittance details, multi-rate
+      tax on invoices) are PERMANENT published limitations of the measured system, not backlog
+      items awaiting a fix. They are reported as coverage facts.
+    * totals.taxPercentage.normalizedValue is null whenever the printed rate is parenthesised,
+      e.g. "(3.88%)" -- observed on Templates 1, 3 and 6. The postprocessor cannot parse that
+      form. This is now a MEASURED FINDING of the frozen system rather than a defect to fix
+      before running, and it is further support for NUMERIC_SOURCE = "originalValue".
+    * The version freeze required before the pilot is satisfied by policy. The manifest still
+      records the exact model id, prompt_version and the git SHA of all three repos.
+  harness_is_the_only_thing_that_changes: |
+    All benchmark code lives in DocuXray_prod/docuxray_benchmark/, a sibling of the three
+    product repos. It imports the production modules read-only and calls
+    GeminiExtractionService.extract(), DocumentJudge.verify_sectional() and
+    run_refinement_pipeline() without mutating anything.
+    One earlier exception has been reverted: a fix to docuxray_ai_backend/tests/eval/scoring.py
+    (numeric parsing in _as_float) was made and then restored to HEAD on 2026-09-01. The harness
+    has its own scorer and never imported it.
+
+multi_rate_tax_policy:
+  decision: |
+    Q3 RESOLVED 2026-09-01 -- handle it WITHOUT a schema change, in three layers.
+    A `Totals.taxes` list (matching ReceiptTotals.taxes) was considered and is NOT being made:
+    the application backend, ai_backend and all prompts are FROZEN for this programme. The gap
+    is therefore a permanent, published limitation of the measured system, not a pending fix.
+  scope: |
+    400 documents, and they are exactly TWO TEMPLATES:
+      Template25 -- 200 docs, five simultaneous GST rates (1%, 5%, 12%, 18%, 20%)
+      Template29 -- 200 docs, a TAX line and a GST line together
+    4,400 single-tax documents across 23 templates remain fully scoreable.
+    Because the affected set is two whole templates rather than a scatter, the exclusion is
+    clean to state and clean to cluster-bootstrap around.
+  layer_1_accuracy: |
+    Scalar totals.taxName / taxAmount / taxPercentage are scored on the 4,400 single-tax
+    documents only. Templates 25 and 29 are excluded from tax accuracy and NAMED in the
+    methodology page. No headline tax number covers them.
+  layer_2_coverage_statistic: |
+    Publish the gap as a number rather than hiding it: "400 of 10,000 documents (4%, 2 of 50
+    templates) carry a tax structure InvoiceData cannot represent -- the invoice schema holds a
+    single tax line, while ReceiptTotals.taxes is already a list." This is a real product
+    finding, it is the honest thing to report, and it is what motivates the schema change.
+  layer_3_recovery_rate: |
+    The individual printed tax lines ARE captured as ground truth (record meta.tax_lines) and
+    scored against totals.otherCharges[], whose own description names "Tax" among the
+    document-level modifiers it targets:
+      "CURRENT-PERIOD document-level financial modifiers (e.g., Shipping, Tax, Service Fees...)"
+    So this is not inventing a target the model was never told about. Report the RECOVERY RATE:
+    of the tax lines the scalar fields cannot hold, how many did the model route to
+    otherCharges? Reported separately, never folded into tax accuracy.
+  rejected_approaches: |
+    * Summing the rates and comparing to taxAmount. total.py:189 instructs the model
+      "DO NOT calculate, infer, or sum individual tax line items" and to "return null if a
+      definitive total tax amount is not explicitly printed". Scoring a summed GT would
+      penalise the model for obeying its own prompt.
+    * "Any one of the five counts as correct" as an accuracy figure. Recall is structurally
+      capped at 1/n, so it is a precision-only number. Acceptable as a labelled diagnostic,
+      misleading as accuracy.
+
+note_policy:
+  decision: |
+    NOTE is compared against invoiceInfo.paymentTerms.raw_text + invoiceInfo.customerMemo
+    MERGED, using token recall of the ground truth within the merge (threshold 0.9).
+    Target path is the derived `invoiceInfo.noteText`; the two component paths are consumed by
+    it and are not scored as separate rows.
+  why_not_customerMemo_alone: |
+    Naveen asked for NOTE -> paymentTerms. Measured against 10 documents with real DocuXray
+    output, neither single field is correct -- the model routes note text BY CONTENT, and does
+    so correctly:
+      "This order is shipped through blue dart courier"   -> customerMemo          (4/4)
+      "Thank you for choosing us!" / "for your business!"  -> customerMemo          (3/4)
+      "Total payment due in 14 days."                      -> paymentTerms.raw_text (1/1)
+      "All payments to be made in cash. Contact us for
+       queries on these quotations."                       -> SPLIT across BOTH     (2/2)
+    Fixing on customerMemo would score the two payment-terms values wrong; fixing on
+    paymentTerms would score the three others wrong. Merging both scores all five correctly and
+    follows the same pattern already agreed for addresses (Q2).
+  why_token_recall_and_not_anls: |
+    Asymmetric on purpose. On Template11 the model put the NOTE in paymentTerms.raw_text and
+    the CONDITIONS text in customerMemo. CONDITIONS is unmapped but is genuinely printed on the
+    page, so the merge legitimately carries content the GT NOTE does not. ANLS would score that
+    0.33 and mark a correct extraction wrong. Token recall of the GT within the merge scores it
+    1.00, which is right.
+    The cost is that this rule cannot detect over-extraction. That is one more reason NOTE is
+    barred from headlines -- it has 5 distinct values corpus-wide and a deliberately lenient
+    match rule. It is a coverage row, not a claim.
+
+line_items_policy:
+  decision: |
+    NO line-item accuracy number is published from FATURA. The rows are captured as research
+    data (record meta.gt_line_items) and are never added to annotated_fields, so nothing can
+    score them by accident.
+  why: |
+    FATURA's line-item "ground truth" is not an annotation -- it is the output of
+    fatura_to_keyvalue.py parsing a flattened reading-order text blob, because the source
+    provides only a TABLE region bbox with no per-cell text. Measured against 16 documents with
+    real DocuXray output and two pages verified pixel-by-pixel:
+
+      * GT holds 18 rows where the model extracted 63       -> 29% recovery
+      * 9 of 16 documents have ZERO GT rows while the page plainly prints rows
+      * Template1_Instance0: GT 'header_but_no_rows', page has 5 rows, model got all 5 right
+      * Template4_Instance0: GT status 'ok' with 1 row, page has 4, model got all 4 right
+
+    That last one is the decisive finding: `_line_items_status == "ok"` does NOT mean the rows
+    are complete, so the planned "filter on ok" safeguard does not work. Scoring against this
+    would measure agreement with a weaker extractor, on a subset the status flag cannot even
+    identify reliably, and would penalise DocuXray for being right.
+  what_fatura_line_items_ARE_used_for: |
+    Both need no trustworthy ground truth:
+      * Row-count stability as a regression signal -- does a prompt or model bump change how
+        many rows come out? Huge n, deterministic, free.
+      * Cross-arm consistency -- does judge + refinement add or drop rows relative to arm B?
+        A real risk worth monitoring, and measurable without GT.
+  where_the_real_number_comes_from: |
+    CORD (human per-cell annotations: menu name, count, unit price, price, sub-total) and the
+    private DocuXray set (already in the production schema). Both are actual ground truth and
+    both are already in the programme, so this costs nothing to give up.
+  published_finding: |
+    State it on the methodology page rather than hiding it: FATURA's derived key-value
+    line-item annotations recover roughly 29% of printed rows, and the `ok` status flag is not
+    a reliable filter. It explains why no FATURA line-item number appears, and it is useful to
+    anyone else using that conversion.
+  if_a_fatura_number_is_ever_wanted: |
+    OCR the TABLE bbox from Annotations/ (with the y-flip and min/max corner normalisation) and
+    human-verify a sample. That is a project in its own right, and CORD already buys the same
+    claim.
+
+no_tax_slice_policy:
+  observation: |
+    5,200 documents carry NO tax label at all. 3,800 of them still have a scoreable TOTAL --
+    which is 45% of the 8,399 scoreable totalIncludingTax observations in the corpus. On those
+    pages totalIncludingTax and totalExcludingTax are the same figure, so the including/
+    excluding distinction cannot be got wrong and the field is easier than it looks.
+    (An earlier note said 1,799; that was the narrower count of docs carrying SUB_TOTAL AND
+    TOTAL AND no tax. The number that matters for the totals denominator is 3,800 of 8,399.)
+    Scoring them alongside taxed documents inflates any total-field number.
+  rule: |
+    Score them normally, but tag each record meta.no_tax_label so every total-field result is
+    reported twice: over all documents, and over the taxed subset only. The gap between the two
+    is published. Decision by Naveen, 2026-09-01.
+
+statistics_policy:
+  clustering: |
+    Every metric reports n_docs AND n_templates. Confidence intervals come from a cluster
+    bootstrap resampling TEMPLATES, never documents. 200 instances of a template are one layout.
+  effective_n: |
+    Publish per-field distinct-GT-value counts. Any field whose effective_n < 20 is barred from
+    headlines. This currently bars the entire seller block (effective_n = 50 values but rendered
+    identically 200x each), all GSTIN variants, and NOTE.
+
+CHANGELOG:
+  - {version: 0.1-draft, date: 2026-09-01, by: claude, change: "Initial blind draft from schema descriptions + corpus statistics. No model output inspected."}
+  - {version: 0.1.1-draft, date: 2026-09-01, by: claude, change: "Added a machine-readable `labels:` list (and `label_regex` for the GST row) to every mapping row. The prose `label:` field stays as the human-facing name. No mapping semantics changed \u2014 this exists so adapters/fatura.py::check_against_yaml can verify the code has not drifted from the reviewed contract."}
+  - {version: 0.1.2-draft, date: 2026-09-01, by: claude, change: "Added the BILL_TO.Name/.Email/.Tel row. adapters/fatura.py resolves BILL_TO to parties.customer when BUYER is absent (1400 files), but the map never named those three labels — check_against_yaml caught the omission. Mapping behaviour unchanged; the contract now states it."}
+  - {version: 0.1.3-draft, date: 2026-09-01, by: claude, change: "Numeric target paths changed from X.originalValue to the logical path X, and numeric_value_policy added. Reason: a real pipeline output showed NumericValue carrying BOTH originalValue and normalizedValue. new_schema.py declares only originalValue because that is what the MODEL emits; ai/postprocessing/_common.py adds normalizedValue afterwards. Scoring a fixed sub-key would have zeroed arm A on every numeric. Values are now read with an accessor mirroring production's _extract_float."}
+  - {version: 0.1.4-draft, date: 2026-09-01, by: naveen+claude, change: "NUMERIC_SOURCE set to originalValue (was: prefer normalizedValue). Rationale recorded in numeric_value_policy: originalValue is present at every pipeline stage and is only .strip()ed by postprocessing, so all three arms are scored on the identical field and arm differences are real pipeline differences. normalizedValue is retained as a fallback and its use rate is published as the postprocessor number-parsing failure rate."}
+  - {version: 1.0-rc1, date: 2026-09-01, by: naveen, change: "Reviewer decisions applied. Q1 resolved: SUB_TOTAL -> totals.subtotal (totalExcludingTax declined). TOTAL -> totals.totalIncludingTax confirmed against page-position, schema-description, arithmetic and model evidence after totalExcludingTax was proposed and withdrawn. Tax rate -> totals.taxPercentage confirmed. Party roles SELLER/BUYER/BILL_TO/SEND_TO -> seller/customer/customer/shipTo confirmed. Added no_tax_slice_policy. 18 rows now accepted; Q2 (address components), Q3 (multi-rate tax) and Q5 (schema gaps) remain open."}
+  - {version: 1.0-rc2, date: 2026-09-01, by: naveen, change: "Q2 resolved: addresses compared by MERGING the model's addressStructured sub-fields into one string and matching that against the GT block. Q3 resolved without a schema change via multi_rate_tax_policy (exclude 2 templates from scalar tax accuracy, publish the gap as a coverage statistic, measure otherCharges recovery). Q5 resolved: party website, party tax ID and bank details stay unmapped and are published as schema gaps."}
+  - {version: 1.0-rc3, date: 2026-09-01, by: claude+naveen, change: "LINE_ITEMS changed from 'mapped, scored on the ok subset' to 'research_only, never scored'. Evidence: across 16 documents with real DocuXray output the GT holds 29% of printed rows, 9 of 16 have zero GT rows where rows are printed, and Template4_Instance0 is marked ok yet holds 1 row against 4 on the page (verified against the image) -- so the ok-subset filter is not a safeguard. Line items now come from CORD and the private set."}
+  - {version: 1.0-rc5, date: 2026-09-01, by: naveen, change: "frozen_system_policy added: backend, ai_backend, schema and all prompts are FROZEN; the shipped system is measured as-is. The Totals.taxes list change is withdrawn. The four schema gaps become permanent published limitations rather than pending fixes. The earlier edit to tests/eval/scoring.py has been reverted to HEAD."}
+  - {version: 1.0-frozen, date: 2026-09-01, by: naveen+sandeep, change: "NOTE resolved: compared against paymentTerms.raw_text + customerMemo MERGED with token-recall 0.9, because the model routes note text by content and splits a mixed NOTE across both fields -- neither single target is correct. ALL 29 ROWS NOW ACCEPTED. Reviewers: Naveen Kumar, Sandeep. The contract is frozen; further changes require a new CHANGELOG entry and both signatures."}

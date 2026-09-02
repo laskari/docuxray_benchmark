@@ -1,0 +1,370 @@
+{
+  "effective_n_floor": 20,
+  "schema_leaf_paths": 59,
+  "address_components_merged": 17,
+  "paths": [
+    {
+      "path": "currency",
+      "rule": "currency",
+      "present": 6129,
+      "absent": 0,
+      "excluded": 3071,
+      "effective_n": 2,
+      "n_templates": 46,
+      "templates_with_variation": 46,
+      "headline_eligible": true,
+      "headline_bar_reason": null,
+      "exclusion_reasons": {
+        "only a bare '$' as currency evidence; ambiguous, not guessed": 3071
+      }
+    },
+    {
+      "path": "invoiceInfo.documentNumber",
+      "rule": "identifier",
+      "present": 8800,
+      "absent": 0,
+      "excluded": 0,
+      "effective_n": 8794,
+      "n_templates": 44,
+      "templates_with_variation": 44,
+      "headline_eligible": true,
+      "headline_bar_reason": null,
+      "exclusion_reasons": {}
+    },
+    {
+      "path": "invoiceInfo.dueDate",
+      "rule": "date_raw",
+      "present": 5798,
+      "absent": 2,
+      "excluded": 0,
+      "effective_n": 4507,
+      "n_templates": 29,
+      "templates_with_variation": 29,
+      "headline_eligible": true,
+      "headline_bar_reason": null,
+      "exclusion_reasons": {}
+    },
+    {
+      "path": "invoiceInfo.dueDateISO",
+      "rule": "date_iso",
+      "present": 5798,
+      "absent": 2,
+      "excluded": 0,
+      "effective_n": 4507,
+      "n_templates": 29,
+      "templates_with_variation": 29,
+      "headline_eligible": true,
+      "headline_bar_reason": null,
+      "exclusion_reasons": {}
+    },
+    {
+      "path": "invoiceInfo.issueDate",
+      "rule": "date_raw",
+      "present": 9798,
+      "absent": 0,
+      "excluded": 2,
+      "effective_n": 6516,
+      "n_templates": 49,
+      "templates_with_variation": 49,
+      "headline_eligible": true,
+      "headline_bar_reason": null,
+      "exclusion_reasons": {
+        "GT DATE holds a due date": 2
+      }
+    },
+    {
+      "path": "invoiceInfo.issueDateISO",
+      "rule": "date_iso",
+      "present": 9798,
+      "absent": 0,
+      "excluded": 2,
+      "effective_n": 6516,
+      "n_templates": 49,
+      "templates_with_variation": 49,
+      "headline_eligible": true,
+      "headline_bar_reason": null,
+      "exclusion_reasons": {
+        "GT DATE holds a due date": 2
+      }
+    },
+    {
+      "path": "invoiceInfo.noteText",
+      "rule": "text_contained",
+      "present": 5200,
+      "absent": 0,
+      "excluded": 0,
+      "effective_n": 5,
+      "n_templates": 26,
+      "templates_with_variation": 26,
+      "headline_eligible": false,
+      "headline_bar_reason": "only 5 distinct GT values (floor 20)",
+      "exclusion_reasons": {}
+    },
+    {
+      "path": "invoiceInfo.purchaseOrderNumber",
+      "rule": "identifier",
+      "present": 1400,
+      "absent": 0,
+      "excluded": 0,
+      "effective_n": 100,
+      "n_templates": 7,
+      "templates_with_variation": 7,
+      "headline_eligible": true,
+      "headline_bar_reason": null,
+      "exclusion_reasons": {}
+    },
+    {
+      "path": "parties.customer.addressStructured",
+      "rule": "address",
+      "present": 7400,
+      "absent": 0,
+      "excluded": 200,
+      "effective_n": 7400,
+      "n_templates": 37,
+      "templates_with_variation": 37,
+      "headline_eligible": true,
+      "headline_bar_reason": null,
+      "exclusion_reasons": {
+        "BUYER and BILL_TO both present; schema has one customer slot": 200
+      }
+    },
+    {
+      "path": "parties.customer.email",
+      "rule": "email",
+      "present": 7400,
+      "absent": 0,
+      "excluded": 200,
+      "effective_n": 7290,
+      "n_templates": 37,
+      "templates_with_variation": 37,
+      "headline_eligible": true,
+      "headline_bar_reason": null,
+      "exclusion_reasons": {
+        "BUYER and BILL_TO both present; schema has one customer slot": 200
+      }
+    },
+    {
+      "path": "parties.customer.name",
+      "rule": "text",
+      "present": 7400,
+      "absent": 0,
+      "excluded": 200,
+      "effective_n": 7052,
+      "n_templates": 37,
+      "templates_with_variation": 37,
+      "headline_eligible": true,
+      "headline_bar_reason": null,
+      "exclusion_reasons": {
+        "BUYER and BILL_TO both present; schema has one customer slot": 200
+      }
+    },
+    {
+      "path": "parties.customer.phone",
+      "rule": "phone",
+      "present": 7400,
+      "absent": 0,
+      "excluded": 200,
+      "effective_n": 7400,
+      "n_templates": 37,
+      "templates_with_variation": 37,
+      "headline_eligible": true,
+      "headline_bar_reason": null,
+      "exclusion_reasons": {
+        "BUYER and BILL_TO both present; schema has one customer slot": 200
+      }
+    },
+    {
+      "path": "parties.seller.addressStructured",
+      "rule": "address",
+      "present": 8200,
+      "absent": 1800,
+      "excluded": 0,
+      "effective_n": 41,
+      "n_templates": 41,
+      "templates_with_variation": 0,
+      "headline_eligible": false,
+      "headline_bar_reason": "template constant: identical across every instance in all 41 templates, so n_effective is the template count, not the document count",
+      "exclusion_reasons": {}
+    },
+    {
+      "path": "parties.seller.email",
+      "rule": "email",
+      "present": 4400,
+      "absent": 5600,
+      "excluded": 0,
+      "effective_n": 22,
+      "n_templates": 22,
+      "templates_with_variation": 0,
+      "headline_eligible": false,
+      "headline_bar_reason": "template constant: identical across every instance in all 22 templates, so n_effective is the template count, not the document count",
+      "exclusion_reasons": {}
+    },
+    {
+      "path": "parties.seller.name",
+      "rule": "text",
+      "present": 6800,
+      "absent": 3200,
+      "excluded": 0,
+      "effective_n": 34,
+      "n_templates": 34,
+      "templates_with_variation": 0,
+      "headline_eligible": false,
+      "headline_bar_reason": "template constant: identical across every instance in all 34 templates, so n_effective is the template count, not the document count",
+      "exclusion_reasons": {}
+    },
+    {
+      "path": "parties.shipTo.addressStructured",
+      "rule": "address",
+      "present": 1800,
+      "absent": 0,
+      "excluded": 0,
+      "effective_n": 1800,
+      "n_templates": 9,
+      "templates_with_variation": 9,
+      "headline_eligible": true,
+      "headline_bar_reason": null,
+      "exclusion_reasons": {}
+    },
+    {
+      "path": "parties.shipTo.email",
+      "rule": "email",
+      "present": 1800,
+      "absent": 0,
+      "excluded": 0,
+      "effective_n": 1789,
+      "n_templates": 9,
+      "templates_with_variation": 9,
+      "headline_eligible": true,
+      "headline_bar_reason": null,
+      "exclusion_reasons": {}
+    },
+    {
+      "path": "parties.shipTo.name",
+      "rule": "text",
+      "present": 1800,
+      "absent": 0,
+      "excluded": 0,
+      "effective_n": 1783,
+      "n_templates": 9,
+      "templates_with_variation": 9,
+      "headline_eligible": true,
+      "headline_bar_reason": null,
+      "exclusion_reasons": {}
+    },
+    {
+      "path": "parties.shipTo.phone",
+      "rule": "phone",
+      "present": 1800,
+      "absent": 0,
+      "excluded": 0,
+      "effective_n": 1800,
+      "n_templates": 9,
+      "templates_with_variation": 9,
+      "headline_eligible": true,
+      "headline_bar_reason": null,
+      "exclusion_reasons": {}
+    },
+    {
+      "path": "totals.discountPercentage",
+      "rule": "numeric",
+      "present": 2400,
+      "absent": 0,
+      "excluded": 0,
+      "effective_n": 399,
+      "n_templates": 12,
+      "templates_with_variation": 12,
+      "headline_eligible": true,
+      "headline_bar_reason": null,
+      "exclusion_reasons": {}
+    },
+    {
+      "path": "totals.discountTotal",
+      "rule": "numeric",
+      "present": 2400,
+      "absent": 0,
+      "excluded": 0,
+      "effective_n": 1789,
+      "n_templates": 12,
+      "templates_with_variation": 12,
+      "headline_eligible": true,
+      "headline_bar_reason": null,
+      "exclusion_reasons": {}
+    },
+    {
+      "path": "totals.subtotal",
+      "rule": "numeric",
+      "present": 6797,
+      "absent": 3,
+      "excluded": 0,
+      "effective_n": 6607,
+      "n_templates": 34,
+      "templates_with_variation": 34,
+      "headline_eligible": true,
+      "headline_bar_reason": null,
+      "exclusion_reasons": {}
+    },
+    {
+      "path": "totals.taxAmount",
+      "rule": "numeric",
+      "present": 4400,
+      "absent": 0,
+      "excluded": 400,
+      "effective_n": 3293,
+      "n_templates": 22,
+      "templates_with_variation": 22,
+      "headline_eligible": true,
+      "headline_bar_reason": null,
+      "exclusion_reasons": {
+        "multi-rate tax: InvoiceData.Totals is scalar and cannot hold 5 tax lines": 200,
+        "multi-rate tax: InvoiceData.Totals is scalar and cannot hold 2 tax lines": 200
+      }
+    },
+    {
+      "path": "totals.taxName",
+      "rule": "text",
+      "present": 4400,
+      "absent": 0,
+      "excluded": 400,
+      "effective_n": 2,
+      "n_templates": 22,
+      "templates_with_variation": 0,
+      "headline_eligible": false,
+      "headline_bar_reason": "only 2 distinct GT values (floor 20)",
+      "exclusion_reasons": {
+        "multi-rate tax: InvoiceData.Totals is scalar and cannot hold 5 tax lines": 200,
+        "multi-rate tax: InvoiceData.Totals is scalar and cannot hold 2 tax lines": 200
+      }
+    },
+    {
+      "path": "totals.taxPercentage",
+      "rule": "numeric",
+      "present": 4400,
+      "absent": 0,
+      "excluded": 400,
+      "effective_n": 403,
+      "n_templates": 22,
+      "templates_with_variation": 18,
+      "headline_eligible": true,
+      "headline_bar_reason": null,
+      "exclusion_reasons": {
+        "multi-rate tax: InvoiceData.Totals is scalar and cannot hold 5 tax lines": 200,
+        "multi-rate tax: InvoiceData.Totals is scalar and cannot hold 2 tax lines": 200
+      }
+    },
+    {
+      "path": "totals.totalIncludingTax",
+      "rule": "numeric",
+      "present": 8399,
+      "absent": 0,
+      "excluded": 1,
+      "effective_n": 8066,
+      "n_templates": 42,
+      "templates_with_variation": 42,
+      "headline_eligible": true,
+      "headline_bar_reason": null,
+      "exclusion_reasons": {
+        "GT TOTAL holds 'DUE_AMOUNT : 240.38 $'": 1
+      }
+    }
+  ]
+}

@@ -1,0 +1,31 @@
+# Secrets — never commit. Create .env yourself; see .env.example.
+.env
+.env.*
+!.env.example
+
+# Run outputs and caches
+runs/
+_cache/
+__pycache__/
+*.pyc
+
+# Built ground truth is regenerable from the dataset in one command:
+#   python3 scripts/build_gt.py --dataset <path>
+gt/fatura.jsonl
+
+# venvs live outside the repo (see setup.sh); ignore any that appear anyway
+.venv*
+venv/
+
+# OS / tooling cruft
+.DS_Store
+.pytest_cache/
+
+# Local run logs
+logs/
+
+# Scratch: old adapters, probes, .bak files staged for removal
+_to_delete/
+
+# Built ground truth (17MB, regenerable like gt/fatura.jsonl)
+gt/invoice/ground_truth.jsonl

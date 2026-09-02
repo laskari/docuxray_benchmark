@@ -1,0 +1,29 @@
+# Overlay for Python versions with no PyMuPDF 1.24.0 wheel (3.13+ on macOS arm64).
+#
+# Use ONLY when requirements.txt cannot install. setup.sh selects this automatically and says
+# so loudly.
+#
+# Why floating PyMuPDF is safe here, and why nothing else may float:
+#   ai/extraction/pdf_utils.py imports fitz at module load (line 6), so the package must be
+#   importable for gemini_extraction_service to import at all. But fitz is only ever CALLED
+#   from pdf_to_png_paths(), reached solely via _pdf_buffer_to_image() when
+#   mime_type == "application/pdf". The benchmark runs extract(<jpg path>), which never enters
+#   that branch. PyMuPDF is therefore import-satisfaction only and its version cannot affect a
+#   single measured value.
+#   Every other pin IS exercised and must match ai_backend exactly.
+#
+# The better fix is Python 3.11 -- it matches ai_backend's Dockerfile AND has a 1.24.0 wheel.
+
+# (base pins, PyMuPDF omitted)
+pydantic==2.13.3
+Pillow==11.2.1
+google-genai==1.73.1
+structlog==25.5.0
+redis==7.4.0
+rq==2.8.0
+pymongo==4.17.0
+PyYAML==6.0.2
+pytest==8.3.4
+openpyxl==3.1.5
+
+PyMuPDF                     # float: no 1.24.0 wheel for this interpreter

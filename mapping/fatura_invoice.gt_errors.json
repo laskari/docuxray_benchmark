@@ -1,0 +1,82 @@
+{
+  "_comment": "FATURA ground-truth defects found before any model run. Published verbatim alongside results. action=correct means the harness rewrites GT deterministically; action=exclude means the field is dropped from that document's denominator.",
+  "_schema": {
+    "doc_id": "file stem or '*' for all",
+    "label": "FATURA label",
+    "issue": "",
+    "action": "correct|exclude",
+    "rule": ""
+  },
+  "errors": [
+    {
+      "doc_id": "Template1_Instance*",
+      "label": "GSTIN_SELLER",
+      "count": 200,
+      "issue": "Value carries the printed label and an unbalanced paren: '(GSTIN: 12345670 00070007'",
+      "action": "exclude",
+      "rule": "Label is unmapped anyway (SCHEMA_GAP). Listed here so the defect is on record if a tax-ID field is later added.",
+      "note": "This is 100% of the field's support, not an edge case."
+    },
+    {
+      "doc_id": "*",
+      "label": "AMOUNT_DUE",
+      "issue": "Some values prefixed 'BALANCE_DUE : ' (e.g. 'BALANCE_DUE : 481.84 $')",
+      "action": "correct",
+      "rule": "Strip a leading /^[A-Z_]+\\s*:\\s*/ before parsing. Record the count of documents corrected."
+    },
+    {
+      "doc_id": "Template38_Instance128",
+      "label": "DATE",
+      "issue": "Holds a due date: 'Due Date : 08-Mar-2020'",
+      "action": "exclude",
+      "rule": "Drop invoiceInfo.issueDate and issueDateISO from this document's denominator."
+    },
+    {
+      "doc_id": "Template40_Instance58",
+      "label": "DATE",
+      "issue": "Holds a due date: 'Due Date : 10-Sep-2000'",
+      "action": "exclude",
+      "rule": "Drop invoiceInfo.issueDate and issueDateISO from this document's denominator."
+    },
+    {
+      "doc_id": "Template18_Instance4",
+      "label": "TOTAL",
+      "issue": "Holds 'DUE_AMOUNT : 240.38 $'",
+      "action": "exclude",
+      "rule": "Drop totals.totalIncludingTax from this document's denominator."
+    }
+  ],
+  "structural_exclusions": [
+    {
+      "set": "multi_rate_tax",
+      "count": 200,
+      "issue": "Five simultaneous GST rates (1%, 5%, 12%, 18%, 20%). InvoiceData.Totals has scalar taxName/taxAmount/taxPercentage and cannot represent multiple tax lines.",
+      "action": "exclude",
+      "rule": "Drop totals.taxName, totals.taxAmount, totals.taxPercentage from these documents. Root cause is a schema gap, not a GT defect."
+    },
+    {
+      "set": "tax_and_gst_both_present",
+      "count": 200,
+      "issue": "Both a TAX label and a GST(n%) label appear; two tax facts, one scalar slot.",
+      "action": "exclude",
+      "rule": "Same as multi_rate_tax."
+    },
+    {
+      "set": "buyer_billto_collision",
+      "count": 200,
+      "issue": "Both BILL_TO and BUYER present; schema has one `customer` slot.",
+      "action": "exclude",
+      "rule": "Drop parties.customer.* from these documents. See party_role_policy in fatura_field_map.yaml."
+    }
+  ],
+  "retracted": [
+    {
+      "label": "SELLER.Address / SELLER.Email",
+      "count": "27 / 16",
+      "previously": "excluded as 'source cross-population, not a real seller address'",
+      "verdict": "NOT A DEFECT -- retracted 2026-09-01 after inspecting images/Template1_Instance0.jpg",
+      "evidence": "The rendered page genuinely prints the SAME address and email in both the seller block and the Bill-to block. FATURA's generator seeded each template's fixed seller block from that template's Instance0 buyer, and the duplication is baked into the artwork. Ground truth is right, the model is right, and excluding the field would have discarded a correct extraction.",
+      "sampling_consequence": "All 27 occurrences are on Instance0 files (27 of the 31 Instance0 docs that carry both SELLER and BUYER); ZERO of the other 6,169 documents show it. Any sampling rule that prefers the first instance therefore over-represents this quirk by two orders of magnitude. The pilot selector was changed to pick a mid-range instance per key-set."
+    }
+  ]
+}

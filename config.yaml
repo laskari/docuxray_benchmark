@@ -1,0 +1,41 @@
+# Non-secret run configuration. Secrets live in .env (gitignored).
+#
+# The measured system is FROZEN (see frozen_system_policy in mapping/fatura_field_map.yaml).
+# These model ids must match what the product actually runs; they are RECORDED here, not chosen
+# here. Defaults mirror ai_backend's own fallbacks.
+
+paths:
+  ai_backend: "../docuxray_ai_backend"
+  dataset:    "../../DocuXray_benchmark/FATURA_invoices_dataset"   # relative: resolves on macOS and in the sandbox
+
+models:
+  # ai/extraction/gemini_extraction_service.py:100  -> os.getenv("GEMINI_MODEL", ...)
+  extraction: "gemini-3-flash-preview"
+  # ai/judge/core/client.py:16                      -> os.environ.get("GEMINI_JUDGE_MODEL", ...)
+  judge:      "gemini-3-flash-preview"
+
+run:
+  doc_type: invoice
+  arms: [A, B, C, D]    # A extract · B +extraction_postprocessing (judge input) · C +judge+refine · D +postprocessing (shipped)
+  concurrency: 2         # each doc fans out to 4 extraction parts then 5 judge sections;
+                         # 4 docs = up to 20 concurrent calls, which trips rate limiting
+  # Hard per-stage wall-clock budgets, in seconds. These are what stops a run from freezing.
+  # ai/llm builds genai.Client with no http_options (gemini_provider.py:83), so there is no HTTP
+  # read timeout, and the judge waits on its 5 sections with as_completed and no timeout
+  # (judge.py:705) -- one section that never returns hangs that document forever. Extraction has
+  # max_retries=3 with backoff; the judge has no retry path at all.
+  # judge is deliberately generous: a legitimate `totals` section has been measured at 136s.
+  stage_timeouts:
+    extract: 300
+    judge:   420
+    free:     60          # the three no-model stages: extraction_postprocessing, refine, postprocess
+  # Hard stop. The runner aborts and writes a partial manifest rather than overrunning.
+  spend_cap_usd: 250.0
+  # Abort if the first N documents project past the cap.
+  early_abort_after: 10
+
+cache:
+  enabled: true
+  dir: "_cache"
+  # key = sha256(image) + model_id + prompt_version + arm
+  # Re-scoring after a metric fix must cost nothing.

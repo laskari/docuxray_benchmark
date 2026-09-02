@@ -1,0 +1,29 @@
+# Benchmark harness dependencies.
+#
+# Versions are PINNED TO docuxray_ai_backend/requirements.txt exactly. The harness imports the
+# production modules directly, so a version drift here would mean benchmarking a different
+# library stack than the product runs. When ai_backend's pins change, change these to match --
+# never independently.
+#
+# Only the subset the harness actually pulls in. Derived by walking the import graph from
+# gemini_extraction_service, judge, refinement, invoice_postprocessor and
+# extraction_postprocessing: PIL, fitz, google, pydantic, pymongo, redis, rq, structlog.
+# fastapi, uvicorn, boto3, httpx, anthropic and the rest are API/worker-layer only.
+
+# --- required at IMPORT time by the production modules -------------------------------------
+pydantic==2.13.3
+Pillow==11.2.1              # PIL
+PyMuPDF==1.24.0             # fitz, via ai/extraction/pdf_utils.py
+google-genai==1.73.1
+structlog==25.5.0
+# Imported by shared/redis_pubsub.py, shared/narrative_pubsub.py and shared/db.py. Both
+# connections are LAZY, so no Redis or MongoDB server is needed -- but the packages must
+# import. See the import spike in README.md.
+redis==7.4.0
+rq==2.8.0
+pymongo==4.17.0
+
+# --- the harness itself ---------------------------------------------------------------------
+PyYAML==6.0.2               # the field map and config.yaml
+pytest==8.3.4               # 135 tests
+openpyxl==3.1.5             # matches ai_backend; the key-mapping worksheet

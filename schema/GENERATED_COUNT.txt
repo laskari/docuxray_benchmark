@@ -1,0 +1,1 @@
+# 72 scoreable leaf paths under InvoiceData
