@@ -17,11 +17,20 @@ values can, and **that judgement is itself a published result** — the share th
 
 **Fields** — one row per (document, field):
 
-| doc_id · template · field · rule · headline | **GT** · **A raw** · **B postproc** · **C refined** | A? · B? · C? · **B→C** | judge flagged · issue · corrected | **ADJUDICATION** · NOTES |
+| doc_id · template · field · rule · headline | **GROUND TRUTH** · **RAW · judge input** · **FINAL · shipped output** | RAW? · FINAL? · **RAW→FINAL** | judge flagged · judge issue · judge corrected value | **ADJUDICATION** · NOTES |
 
-Ground truth sits beside all three arms, with the harness's own verdict for each — you should
+Ground truth sits beside both arms, with the harness's own verdict for each — you should
 never have to decide by eye whether `9.93` matches `(-) 9.93`. Mismatches shade red, `FIXED`
-green, `HARMED` orange. Filter `B→C = HARMED` for every field the judge broke.
+green, `HARMED` orange. Filter `RAW→FINAL = HARMED` for every field the pipeline broke after
+extraction.
+
+Two arms, not four, because these are the two states production actually persists:
+`pages.$.extraction_postprocessing_result` (what the judge is fed) and
+`pages.$.postprocessing_result` (what the customer receives). A `RAW→FINAL` verdict therefore
+spans **judge + refinement + postprocessing together** — when adjudicating, do not write
+"the judge broke this" in NOTES unless the `judge corrected value` column actually shows it.
+The two intermediate states are in `runs/<id>/stages/` and `scripts/derive_arms.py` folds
+either of them back in as an extra column at zero cost when a row needs it.
 
 **By file** — per-document rates. A document failing across many fields is usually one layout
 problem, not many field problems.
@@ -51,9 +60,9 @@ the machine's work against the page.
 ## What it caught on the first 10 documents — and the lesson
 
 The sheet showed the judge "reverting" the postprocessor's `9.93` to the printed `(-) 9.93`,
-dropping `discountTotal` from 100% to 33% in arm C. It read as a clean production defect.
+dropping `discountTotal` from 100% to 33% after the judge. It read as a clean production defect.
 
-**It was a harness bug.** That version ran the type postprocessor in arm B, so the judge was fed
+**It was a harness bug.** That version ran the type postprocessor before the judge, so the judge was fed
 normalised numbers. In production the postprocessor runs *after* refinement and the judge only
 ever sees `{"originalValue": "(-) 9.93"}` — there is nothing for it to revert.
 

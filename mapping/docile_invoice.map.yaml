@@ -1,0 +1,444 @@
+# DocILE100 label -> DocuXray InvoiceData schema path map
+#
+# AUTHORED BLIND: every row below was written from DocILE100 label semantics read against the
+# Field(description=...) text in ai/extraction/new_schema.py, plus three source images opened
+# to establish what the labels physically refer to (000d0248… broadcast affidavit,
+# 004c5e8c… remittance advice, 039b024e… radio log). NO DocuXray model output was inspected
+# while writing this file. Do not amend a row after seeing scores without recording the change
+# and its reason in CHANGELOG at the bottom.
+#
+# status:  mapped | unmapped | not_annotated
+# review:  accepted | PENDING | disputed        <- reviewers set this
+# absence_authoritative:
+#   FALSE FOR EVERY ROW IN THIS FILE. See absence_policy below — DocILE100 has no repeating
+#   structure to license authoritative absence, so no field here can produce a hallucination
+#   number. This is the single biggest difference from the FATURA map.
+#
+# Target paths are relative to invoiceOutputData.
+
+version: 0.1-PENDING-REVIEW
+dataset: DocILE100 (Humayoun/DocILE100 on Hugging Face; annotations_normalized/, 100 files)
+schema_ref: "ai/extraction/new_schema.py :: InvoiceData"
+leaf_paths_ref: schema/invoice_leaf_paths.tsv   # 72 paths, generated
+
+provenance_warning: |
+  READ BEFORE PUBLISHING ANY NUMBER FROM THIS DATASET.
+
+  The Hugging Face dataset card for Humayoun/DocILE100 is EMPTY. Its README is auto-generated
+  YAML frontmatter only — `image` + `text` features, 100 examples, 11.2 MB. There is no
+  description, no licence, no annotation methodology and no attribution to the official DocILE
+  dataset. The `image` + `text` feature pair is the conventional shape of a VLM fine-tuning
+  set, which is consistent with the JSON having been produced by a model, but that is not
+  proven either way.
+
+  Measured evidence that the labels are nonetheless of usable quality:
+    * 69 of 100 documents have line-item totals summing EXACTLY to a stated invoiceSubTotal
+      (40) or invoiceTotal (29). 9 mismatch, 14 cannot be checked, 8 state no total.
+    * Three images opened by hand were read faithfully, including itemCaseSize=60 correctly
+      capturing the broadcast "Len" (seconds) column and 0 line items on a remittance advice
+      that has no itemised table.
+
+  Consequence, decided 2026-09-03: DocILE100 is a DEVELOPMENT set. Published line-item numbers
+  come only from the hand-adjudicated subset (see adjudication_policy). Full-100 numbers may be
+  reported beside them, labelled as measured against unverified third-party labels.
+
+absence_policy: |
+  Every null in this dataset is state (iii) not_annotated — excluded from every denominator.
+
+  FATURA could license authoritative absence because 200 instances share one template, so a
+  label absent from one instance but present in its siblings is genuinely absent from that
+  page. DocILE100 is 100 unrelated documents with 93 distinct vendors and no repeating
+  structure, so a null is indistinguishable between "not printed on the page" and "the
+  annotator did not record it". Financial Summary is null at 90/100 (taxes), 98/100 (shipping),
+  96/100 (credit) and 91/100 (discount) — treating those as authoritative absence would
+  manufacture a hallucination denominator out of nothing.
+
+  The FATURA audit is the cautionary case: absence there was licensed by a mechanism that
+  turned out to be unsound for one field, and 100% of the resulting hallucination count was
+  artefact. DocILE100 therefore publishes NO hallucination metric.
+
+adjudication_policy: |
+  40 documents to be verified against their images by a reviewer before publication, recorded
+  in mapping/docile_invoice.adjudication.json. A document passes only when every mapped field
+  and every line-item row is confirmed present-and-correct or corrected. Reports must print the
+  verified-subset numbers and the full-100 numbers side by side, never merged.
+
+# =============================================================================
+# HIGH CONFIDENCE
+# =============================================================================
+
+mappings:
+  - label: Vendor Information.vendorName
+    labels: ["Vendor Information.vendorName"]
+    status: mapped
+    confidence: high
+    coverage: 100
+    review: PENDING
+    targets:
+      - {path: parties.seller.name, parser: passthrough_strip}
+    absence_authoritative: false
+    note: >
+      The issuing party printed in the letterhead — verified on three images (Dimes Media
+      Corporation, BROWN & WILLIAMSON TOBACCO CORPORATION, KPQX 92.5 FM are all senders, not
+      recipients). 93 distinct values over 100 documents, so unlike FATURA's seller block this
+      is NOT a template constant and IS headline-eligible.
+
+  - label: Vendor Information.invoiceNumber
+    labels: ["Vendor Information.invoiceNumber"]
+    status: mapped
+    confidence: high
+    coverage: 89
+    review: PENDING
+    targets:
+      - {path: invoiceInfo.documentNumber, parser: passthrough_strip}
+    absence_authoritative: false
+    note: >
+      Values like '1027', 'MAY2001', '20100287'. IDENTIFIER rule — strict-normalised exact, a
+      near miss is a full miss. 'MAY2001' shows the field is not always numeric.
+
+  - label: Vendor Information.invoiceDate
+    labels: ["Vendor Information.invoiceDate"]
+    status: mapped
+    confidence: high
+    coverage: 95
+    review: PENDING
+    targets:
+      - {path: invoiceInfo.issueDate,    parser: passthrough_strip, role: format_fidelity}
+      - {path: invoiceInfo.issueDateISO, parser: date_to_iso,       role: fact}
+    absence_authoritative: false
+    excluded_for_iso: 24
+    note: >
+      Unlike FATURA's uniform DD-Mon-YYYY, DocILE100 dates are heterogeneous: 38 M/D/YY,
+      30 M/D/YYYY, 18 'Month D, YYYY', and 9 one-off forms ('06-SEP-01', 'SEP30/20 13.06',
+      '02-29-20', '11-29-2020', '8/4/2020 12:50:24').
+
+      ISO is EXCLUDED on 24 documents and the reason is published per document:
+        * 23 where day and month are both <= 12, so M/D vs D/M cannot be resolved. DocILE is
+          US-sourced, which makes M/D likely — likely is not ground truth, and guessing would
+          silently score a quarter of the field on an assumption.
+        * 1 ('8/4/2020 12:50:24') where the GT value embeds a time, which issueDate's own
+          description forbids ("Do not extract or include any time"). That is a GT defect, not
+          a model failure, so the document is excluded rather than scored.
+      Raw-form fidelity is still scored on all 95. Never put raw and ISO in one denominator.
+
+  - label: Financial Summary.invoiceTotal
+    labels: ["Financial Summary.invoiceTotal"]
+    status: mapped
+    confidence: high
+    coverage: 89
+    review: PENDING
+    targets:
+      - {path: totals.totalIncludingTax, parser: money_amount}
+    absence_authoritative: false
+    note: >
+      totalIncludingTax is described as "the absolute final amount … typically positioned at
+      the very bottom next to labels like 'Grand Total'", which is what invoiceTotal holds.
+      The best-covered totals field at 89/100 and the natural headline for the totals section.
+
+  - label: Financial Summary.taxes
+    labels: ["Financial Summary.taxes"]
+    status: mapped
+    confidence: high
+    coverage: 10
+    review: PENDING
+    headline_eligible: false
+    targets:
+      - {path: totals.taxAmount, parser: money_amount}
+    absence_authoritative: false
+    note: >
+      Maps cleanly (taxAmount = "the overall total tax amount … extract VERBATIM … outside the
+      primary itemized section"), but 10 supporting documents is far too few for a published
+      rate. Scored and reported with n; barred from any headline.
+
+  - label: Financial Summary.totalDiscount
+    labels: ["Financial Summary.totalDiscount"]
+    status: mapped
+    confidence: high
+    coverage: 9
+    review: PENDING
+    headline_eligible: false
+    targets:
+      - {path: totals.discountTotal, parser: money_amount}
+    absence_authoritative: false
+    note: >
+      discountTotal is "the total, finalized monetary discount amount explicitly printed within
+      the invoice summary/totals section" — exactly totalDiscount. n=9; barred from headlines.
+      One value is the string '.00' (a printed zero), which must normalise to 0.00 and not null.
+
+  - label: Itemized Purchases.itemName
+    labels: ["Itemized Purchases.itemName"]
+    status: mapped
+    confidence: high
+    coverage: 450          # rows, not documents
+    review: PENDING
+    targets:
+      - {path: "lineItems[].description", parser: passthrough_strip, match: anls_0.8}
+    absence_authoritative: false
+    accept_alternate_gt_column: "Itemized Purchases.itemCode"
+    note: >
+      The annotation's choice of source column DRIFTS between documents: in 000d0248… itemName
+      holds the real description ('STEWART JENKINS AD 5') and itemCode is null, while in
+      039b024e… itemName is the generic '60 Spot' (44 rows) and the real identifier sits in
+      itemCode ('20AFSCMEMTOR1R "Bankroll" Radio :60'). Other generic repeats: 'INTEGRATN'
+      (12), 'Phone Long Dist' (21).
+
+      Decided 2026-09-03: a prediction matching EITHER itemName or itemCode counts as that
+      row's description, and the report states which column matched so the drift stays visible
+      instead of being scored as a model error. Scoring itemName alone would penalise the model
+      on the 44 rows where itemName is a column heading rather than a description.
+
+  - label: Itemized Purchases.itemPrice
+    labels: ["Itemized Purchases.itemPrice"]
+    status: mapped
+    confidence: high
+    coverage: 374          # rows
+    review: PENDING
+    targets:
+      - {path: "lineItems[].unitPrice", parser: money_amount}
+    absence_authoritative: false
+    note: "The per-unit Rate column. unitPrice is 'the price per single unit'. Values '$5.00', '16.45'."
+
+  - label: Itemized Purchases.itemeQty
+    labels: ["Itemized Purchases.itemeQty"]
+    status: mapped
+    confidence: high
+    coverage: 264          # rows
+    review: PENDING
+    targets:
+      - {path: "lineItems[].quantity", parser: money_amount}
+    absence_authoritative: false
+    note: >
+      The Qty column. The label's spelling ('itemeQty') is the source's own typo and is
+      preserved verbatim here so the contract check matches the real key.
+
+  - label: Itemized Purchases.totalItemPrice
+    labels: ["Itemized Purchases.totalItemPrice"]
+    status: mapped
+    confidence: high
+    coverage: 392          # rows
+    review: PENDING
+    targets:
+      - {path: "lineItems[].lineTotalExcludingTax", parser: money_amount, role: merged}
+      - {path: "lineItems[].lineTotalIncludingTax", parser: money_amount, role: merged}
+    merged_target: true
+    absence_authoritative: false
+    note: >
+      One GT value, two possible destinations. lineTotalExcludingTax says "if tax is not applied
+      on this line, populate this field with the line total and leave lineTotalIncludingTax
+      empty"; lineTotalIncludingTax says the converse. No DocILE100 row carries per-line tax, so
+      the correct destination is lineTotalExcludingTax — but the instruction is conditional and
+      a model that reads the row as tax-inclusive is not wrong about the number. Compared
+      against the UNION of the two paths; the components are consumed, not scored separately.
+
+  - label: Itemized Purchases.date
+    labels: ["Itemized Purchases.date"]
+    status: mapped
+    confidence: high
+    coverage: 44           # rows
+    review: PENDING
+    headline_eligible: false
+    targets:
+      - {path: "lineItems[].serviceDate",    parser: passthrough_strip, role: format_fidelity}
+      - {path: "lineItems[].serviceDateISO", parser: date_to_iso,       role: fact}
+    absence_authoritative: false
+    note: >
+      Present only on the radio-log shape, where each row is one aired spot and the row's own
+      date is its service date — which is precisely serviceDate's description ("as printed on
+      this specific line item row … do not infer from the invoice date"). 44 rows in one
+      document family, so it measures one layout, not the corpus.
+
+# =============================================================================
+# MEDIUM CONFIDENCE — review these first
+# =============================================================================
+
+  - label: Financial Summary.invoiceSubTotal
+    labels: ["Financial Summary.invoiceSubTotal"]
+    status: mapped
+    confidence: medium
+    coverage: 52
+    review: PENDING
+    targets:
+      - {path: totals.subtotal, parser: money_amount}
+    absence_authoritative: false
+    note: >
+      subtotal is "the verbatim printed base sum of items … paired with explicit labels like
+      'Subtotal' or 'Line Item Total'". That is the intended reading, and it is right on the
+      documents that print a labelled subtotal.
+
+      WHY MEDIUM: the annotation stretches it. On 004c5e8c… (a Vendor Remittance Advice with no
+      itemised table) invoiceSubTotal holds 73,931.00 — the 'GROSS AMOUNT' column of a voucher
+      row, not a printed subtotal, and invoiceTotal holds the same figure from 'NET AMOUNT'.
+      A model following the schema description would return null for subtotal there. Flag for
+      the adjudication pass: those documents may need excluding rather than scoring.
+
+  - label: Itemized Purchases.itemCode
+    labels: ["Itemized Purchases.itemCode"]
+    status: mapped
+    confidence: medium
+    coverage: 145          # rows
+    review: PENDING
+    targets:
+      - {path: "lineItems[].itemCode", parser: passthrough_strip}
+    absence_authoritative: false
+    note: >
+      itemCode is "SKU, part number, or internal item code … do not extract row numbers".
+      Sound where the value is a real code, but the same drift as itemName runs the other way:
+      on the radio-log family itemCode carries a full descriptive string
+      ('20AFSCMEMTOR1R "Bankroll" Radio :60') that a model may reasonably route to description
+      instead. Scored, but the row-matching rule above treats the two columns as
+      interchangeable for alignment.
+
+  - label: Financial Summary.deliveryShippingCharges + otherCharges
+    labels: ["Financial Summary.deliveryShippingCharges", "Financial Summary.otherCharges"]
+    status: mapped
+    confidence: medium
+    coverage: 6            # 2 shipping + 4 other, documents
+    review: PENDING
+    headline_eligible: false
+    targets:
+      - {path: "totals.otherCharges[]", parser: money_amount, match: charge_recovery}
+    absence_authoritative: false
+    note: >
+      InvoiceData has no dedicated shipping field; otherCharges is the declared home for
+      "CURRENT-PERIOD document-level financial modifiers (e.g. Shipping, Tax, Service Fees…)"
+      and names Shipping explicitly. Both labels therefore land in the same list, which makes
+      this a set-recovery measurement (did the model recover the charge and its label?) rather
+      than a scalar comparison. n=6 documents total; reported as a recovery count with n, never
+      as a rate.
+
+# =============================================================================
+# UNMAPPED — the schema has no home for these. Published as schema gaps.
+# =============================================================================
+
+unmapped:
+  - label: Itemized Purchases.itemCaseSize
+    labels: ["Itemized Purchases.itemCaseSize"]
+    status: unmapped
+    coverage: 165          # rows
+    review: PENDING
+    reason: SCHEMA GAP
+    note: >
+      Verified against 000d0248…: this is the broadcast 'Len' column — the spot length in
+      seconds (60). LineItem has unitOfMeasure (a unit name, e.g. 'each'), not a duration or a
+      pack size, so there is nowhere correct to put 60. Mapping it to unitOfMeasure would score
+      a number against a unit-name field. The most consequential gap in this map at 165 of 450
+      rows; worth raising as a schema request if broadcast invoices matter commercially.
+
+  - label: Itemized Purchases.time
+    labels: ["Itemized Purchases.time"]
+    status: unmapped
+    coverage: 44           # rows
+    review: PENDING
+    reason: SCHEMA GAP
+    note: >
+      The air time of a spot ('07:27 AM'). LineItem has serviceDate but no service time, and
+      serviceDate's description explicitly excludes time components. No target exists.
+
+  - label: Financial Summary.credit
+    labels: ["Financial Summary.credit"]
+    status: unmapped
+    coverage: 4
+    review: PENDING
+    reason: SCHEMA GAP
+    note: >
+      A credit applied against the balance. The nearest candidates all mean something else:
+      deposit is "PRIOR PRE-PAYMENTS OR ADVANCES" (a credit need not be a prepayment),
+      previousUnpaidBalances is historical arrears, discountTotal is a discount, and
+      otherCharges is for charges. Left unmapped rather than forced; n=4 so nothing measurable
+      is lost.
+
+# =============================================================================
+# NOT ANNOTATED — this dataset cannot speak to these at all
+# =============================================================================
+
+not_annotated:
+  - path: currency
+    reason: >
+      DocILE100 has no currency label. Amounts print a bare '$', which is ambiguous between
+      USD/CAD/AUD/SGD — the same ambiguity that excluded currency on 3,071 FATURA documents.
+      DocILE is US-sourced, so USD is likely; likely is not ground truth. Excluded entirely
+      rather than guessed.
+  - path: Itemized Purchases.itemWeight
+    reason: >
+      Present as a key on all 450 rows and null on all 450. The dataset carries no weight
+      signal whatsoever, so there is nothing to score and no absence to assert.
+  - path: parties.seller.addressStructured.*
+    reason: >
+      Vendor addresses are printed on the pages (verified on three images) but DocILE100 has no
+      address label. Not annotated, therefore excluded from every denominator — NOT recorded as
+      absent, which would score a correct read as a hallucination. This is the exact failure
+      found in the FATURA seller block on 2026-09-03.
+  - path: parties.customer.*, parties.shipTo.*
+    reason: "No buyer or ship-to label. Bill-to blocks are printed but unannotated."
+  - path: invoiceInfo.dueDate, invoiceInfo.dueDateISO, invoiceInfo.purchaseOrderNumber,
+          invoiceInfo.customerNumber, invoiceInfo.paymentTerms.*, invoiceInfo.customerMemo,
+          invoiceInfo.category
+    reason: "No corresponding label in DocILE100's three-section schema."
+  - path: totals.totalExcludingTax, totals.taxPercentage, totals.taxName,
+          totals.discountPercentage, totals.deposit, totals.previousUnpaidBalances,
+          totals.grandTotalIncludingPreviousBalances,
+          totals.postPaymentRemainingCurrentBalance
+    reason: "No corresponding label. Percentages are never annotated; only absolute amounts are."
+  - path: shippingInfo.*, invoiceStatus, applyTaxAfterDiscount, isOverflowPage
+    reason: "No corresponding label."
+  - path: "lineItems[].unitOfMeasure, lineItems[].discountAmount, lineItems[].discountPercent,
+           lineItems[].lineTaxAmount, lineItems[].lineTaxPercent"
+    reason: "No per-row discount or tax annotation anywhere in the 450 rows."
+
+# =============================================================================
+# POLICIES
+# =============================================================================
+
+document_heterogeneity_policy: |
+  DocILE100 is not 100 invoices. Opening three images found a broadcast Invoice/Affidavit, a
+  radio air-time log, and a Vendor Remittance Advice — the last of which has no itemised
+  purchase table at all and legitimately carries 0 line items (3 documents have 0 rows).
+
+  This is a feature for a benchmark that claims real-world coverage and a hazard for a
+  line-item metric: a remittance advice cannot contribute to row recall, and counting it as a
+  0-row document that the model "got right" or "got wrong" both mislead. Documents with 0 GT
+  rows are therefore excluded from the row-level denominators and reported separately as a
+  table-presence question.
+
+line_items_policy: |
+  SCORED on this dataset — the opposite of the FATURA decision, and for a stated reason.
+
+  FATURA annotates zero line-item content (its TABLE label is one bbox with no text; rows in
+  modified_annotations are regex output over a noisy OCR dump). DocILE100 annotates 450 rows
+  with description, quantity, unit price and line total directly, and 69 of 100 documents have
+  those rows summing exactly to a stated subtotal or total — an independent arithmetic check
+  the FATURA rows could never pass.
+
+  Method (see core/rows.py):
+    * Rows aligned by optimal assignment, not by index. A single dropped row must not score
+      every subsequent row wrong.
+    * Alignment key: description similarity (ANLS >= 0.8) against itemName OR itemCode.
+    * Report row precision / recall / F1 from the assignment, plus per-field accuracy over
+      MATCHED rows only, plus row_exact and table_exact. Row F1 and per-field accuracy must be
+      published together: a model that drops half the table otherwise looks strong on fields.
+    * Score each row only on the columns its own GT row populates — quantity is present on 264
+      of 450 rows, so a corpus-wide quantity denominator would be wrong by 40%.
+    * Cluster on document, not row.
+
+statistics_policy: |
+  cluster_id = doc_id. 93 distinct vendors over 100 documents (7 vendors appear twice, 86 are
+  singletons), so effective N is essentially 100 and the FATURA cluster problem — effective
+  N of 50 against 10,000 documents — does not arise here. Intervals still come from a bootstrap
+  over documents; every metric carries n_docs, and line-item metrics also carry n_rows.
+
+  Coverage is the real constraint, not clustering: taxes n=10, totalDiscount n=9,
+  otherCharges n=6. Those are reported with n and barred from headlines.
+
+gt_quality_notes: |
+  * 69/100 documents: line-item totals sum exactly to a stated subtotal (40) or total (29).
+  * 9/100: rows sum to NEITHER stated figure. Adjudicate first — these are either GT errors or
+    legitimately partial tables (a multi-page invoice's page 1). Excluded from arithmetic-
+    consistent reporting until resolved.
+  * 14/100: at least one row has no line total, so no check is possible.
+  * 8/100: no subtotal and no total stated, so nothing to check against.
+  * 5 records arrived wrapped in a redundant {"Invoice": {...}} envelope and were unwrapped by
+    normalize_annotations.py; annotations/ is untouched and annotations_normalized/ is what this
+    map reads.
+
+CHANGELOG:
+  - {version: 0.1, date: 2026-09-03, by: claude, change: "Initial blind authorship from DocILE100 label semantics against new_schema.py descriptions plus three source images. 14 mapped rows, 3 unmapped schema gaps, the rest not_annotated. Absence non-authoritative throughout; no hallucination metric. Awaiting Naveen's review."}

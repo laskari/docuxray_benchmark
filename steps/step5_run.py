@@ -3,7 +3,7 @@
 
 Thin wrapper over core/runner.py so the seven steps read as one sequence.
 
-    python steps/step5_run.py --plan gt/invoice/smoke_51.json --arms A,B,C --run-id smoke
+    python steps/step5_run.py --plan gt/invoice/smoke_51.json --arms RAW,FINAL --run-id smoke
     python steps/step5_run.py --plan gt/invoice/smoke_51.json --limit 10 --run-id costprobe
 """
 import pathlib, sys

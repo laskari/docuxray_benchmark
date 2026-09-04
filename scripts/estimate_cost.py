@@ -15,7 +15,7 @@ _ROOT = pathlib.Path(__file__).resolve().parent.parent
 
 # --- what a run actually costs, structurally -------------------------------------------
 # Arms A and B share ONE extraction: B is A plus deterministic postprocessing, which makes no
-# model call. run_refinement_pipeline is also deterministic (_apply_issues). So arm C adds only
+# model call. run_refinement_pipeline is also deterministic (_apply_issues). So arm FINAL adds only
 # the judge. Per document the whole A/B/C sweep is 4 extraction calls + 5 judge sections.
 EXTRACTION_CALLS = 4          # SPLIT_PARTS = parties, lineitems, totals, other
 JUDGE_SECTIONS   = 5          # invoiceInfo, parties, lineItems, totals, shippingInfo
@@ -78,7 +78,7 @@ def main() -> int:
     print(f"per document     {d['in_tokens']:>7,d} in  {d['out_tokens']:>7,d} out(+thinking)  "
           f"= ${d['total_usd']:.4f}")
     print(f"                 extraction ${d['extraction_usd']:.4f}  (covers arms A and B)")
-    print(f"                 judge      ${d['judge_usd']:.4f}  (adds arm C)\n")
+    print(f"                 judge      ${d['judge_usd']:.4f}  (adds arm FINAL)\n")
     rows = [("smoke (1 per template)", a.smoke), ("pilot", a.pilot), ("main run", a.main),
             (f"variance probe ({a.variance_docs}x{a.variance_runs})", variance)]
     total = 0.0

@@ -27,5 +27,6 @@ logs/
 # Scratch: old adapters, probes, .bak files staged for removal
 _to_delete/
 
-# Built ground truth (17MB, regenerable like gt/fatura.jsonl)
-gt/invoice/ground_truth.jsonl
+# Built ground truth (17MB, regenerable like gt/fatura.jsonl). The path moved into a
+# per-dataset subdirectory; the old flat pattern silently stopped matching.
+gt/invoice/fatura/ground_truth.jsonl

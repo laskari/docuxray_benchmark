@@ -20,8 +20,8 @@ effective n, and whether it is headline-eligible with the reason if not.
 
 |  | flagged | silent |
 |---|---|---|
-| wrong in arm B | TP | FN |
-| correct in arm B | FP | TN |
+| wrong in RAW | TP | FN |
+| correct in RAW | FP | TN |
 
 plus **fields fixed**, **fields harmed**, net lift, and **harm rate** — the share of fields
 correct in B that C got wrong. *A positive net lift with a high harm rate is not a good trade,*

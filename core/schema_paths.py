@@ -47,7 +47,7 @@ def leaf_paths(model: type[BaseModel], prefix: str = ""):
                 # between stages -- extraction emits {"originalValue": str}, the postprocessor
                 # adds {"normalizedValue": float} -- so the value is read with
                 # normalize.numeric_from_field(), never from a fixed sub-path. Scoring
-                # `.normalizedValue` directly would zero out arm A.
+                # `.normalizedValue` directly would zero out bare extraction.
                 yield path, "numeric"
             else:
                 yield from leaf_paths(typ, path)

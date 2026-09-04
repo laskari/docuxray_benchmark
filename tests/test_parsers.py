@@ -54,7 +54,8 @@ def test_tax_name(raw, name):
 
 def test_discount_is_stored_as_positive_magnitude():
     # invoice_postprocessor._normalize_totals flips a negative discountTotal to abs(). GT must
-    # match that convention or arm B scores worse than arm A as a pure sign artifact.
+    # match that convention or the postprocessed arm scores worse than bare extraction as a
+    # pure sign artifact.
     assert run("money_abs", "(1.85%): (-) 13.42") == "13.42"
     assert run("pct_in_parens", "(1.85%): (-) 13.42") == "1.85"
 

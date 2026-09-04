@@ -165,7 +165,7 @@ mappings:
       RESOLVED BY EVIDENCE: GT stores discount as POSITIVE MAGNITUDE.
       ai/postprocessing/invoice_postprocessor.py::_normalize_totals converts a negative
       discountTotal to its absolute value and emits a correction event. Storing GT as -13.42
-      would make arm B (postprocessed) score worse than arm A on every discounted invoice,
+      would make the postprocessed arm score worse than bare extraction on every discounted invoice,
       purely as a sign-convention artifact. Discount amount == SUB_TOTAL x pct in 1800/1800 files,
       so the percentage and amount are internally consistent and both are safe to score.
 
@@ -545,8 +545,8 @@ null_semantics:
 
 numeric_value_policy:
   wire_shape_differs_by_stage: |
-    arm A (raw extraction)   {"originalValue": "1,234.56"}
-    arm B / C (postprocessed) {"originalValue": "1,234.56", "normalizedValue": 1234.56}
+    bare extraction  {"originalValue": "1,234.56"}
+    RAW / FINAL      {"originalValue": "1,234.56", "normalizedValue": 1234.56}
     new_schema.NumericValue declares ONLY originalValue and sets extra="forbid", so the model
     cannot emit normalizedValue. The postprocessor adds it
     (ai/postprocessing/_common.py::_normalize_numeric_value).
@@ -559,9 +559,10 @@ numeric_value_policy:
 
     Why originalValue and not normalizedValue:
       * It is present at EVERY stage. normalizedValue exists only after postprocessing, so
-        pinning to it would score arm A as zero on every amount -- a wire-format artifact, not
+        pinning to it would score bare extraction as zero on every amount -- a wire-format
+        artifact, not
         a fact about the model.
-      * The postprocessor only .strip()s originalValue, so arms A, B and C are scored on the
+      * The postprocessor only .strip()s originalValue, so RAW and FINAL are scored on the
         IDENTICAL field. Any arm-to-arm difference is therefore a real pipeline difference.
       * It is the verbatim printed string, which is what the ground truth also records. The
         two sides are the same kind of evidence.
@@ -709,7 +710,8 @@ line_items_policy:
     Both need no trustworthy ground truth:
       * Row-count stability as a regression signal -- does a prompt or model bump change how
         many rows come out? Huge n, deterministic, free.
-      * Cross-arm consistency -- does judge + refinement add or drop rows relative to arm B?
+      * Cross-arm consistency -- does the post-extraction machinery add or drop rows relative
+        to RAW?
         A real risk worth monitoring, and measurable without GT.
   where_the_real_number_comes_from: |
     CORD (human per-cell annotations: menu name, count, unit price, price, sub-total) and the
@@ -759,3 +761,4 @@ CHANGELOG:
   - {version: 1.0-rc3, date: 2026-09-01, by: claude+naveen, change: "LINE_ITEMS changed from 'mapped, scored on the ok subset' to 'research_only, never scored'. Evidence: across 16 documents with real DocuXray output the GT holds 29% of printed rows, 9 of 16 have zero GT rows where rows are printed, and Template4_Instance0 is marked ok yet holds 1 row against 4 on the page (verified against the image) -- so the ok-subset filter is not a safeguard. Line items now come from CORD and the private set."}
   - {version: 1.0-rc5, date: 2026-09-01, by: naveen, change: "frozen_system_policy added: backend, ai_backend, schema and all prompts are FROZEN; the shipped system is measured as-is. The Totals.taxes list change is withdrawn. The four schema gaps become permanent published limitations rather than pending fixes. The earlier edit to tests/eval/scoring.py has been reverted to HEAD."}
   - {version: 1.0-frozen, date: 2026-09-01, by: naveen+sandeep, change: "NOTE resolved: compared against paymentTerms.raw_text + customerMemo MERGED with token-recall 0.9, because the model routes note text by content and splits a mixed NOTE across both fields -- neither single target is correct. ALL 29 ROWS NOW ACCEPTED. Reviewers: Naveen Kumar, Sandeep. The contract is frozen; further changes require a new CHANGELOG entry and both signatures."}
+  - {version: 1.0-frozen, date: 2026-09-02, by: claude, change: "NOMENCLATURE ONLY. The harness collapsed four cumulative arms (A/B/C/D) to the two states production actually persists: RAW = extraction + extraction_postprocessing = pages.$.extraction_postprocessing_result = the judge input, and FINAL = RAW + judge + refinement + postprocessing = pages.$.postprocessing_result = the shipped output. Prose in this map was updated to the new names. NO mapping row, target path, parser, match rule, absence_authoritative flag or policy decision changed; the frozen contract and its two signatures stand. Note for readers of any RAW->FINAL number: that gap spans judge + refinement + postprocessing together and does not attribute to the judge alone. The judge detector matrix does, because RAW is exactly its input."}

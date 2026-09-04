@@ -27,19 +27,21 @@ _ROOT = pathlib.Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(_ROOT))
 import doctypes                                                   # noqa: E402
 from core.canonical import read_jsonl                             # noqa: E402
-from registry import dataset_for                                  # noqa: E402
+from registry import dataset_for, gt_dir as _gt_dir              # noqa: E402
 
 
 def main() -> int:
     ap = argparse.ArgumentParser()
     ap.add_argument("--doc-type", default="invoice")
+    ap.add_argument("--dataset", default=None,
+                    help="required when the doc type has several datasets")
     ap.add_argument("--instances-per-cluster", type=int, default=20)
     ap.add_argument("--seed", type=int, default=20260901)
     ap.add_argument("--describe", action="store_true")
     a = ap.parse_args()
 
     spec = doctypes.get(a.doc_type)
-    gt_dir = _ROOT / "gt" / spec.name
+    gt_dir = _gt_dir(spec.name, a.dataset)
     src = gt_dir / "ground_truth.jsonl"
     if not src.exists():
         print(f"!! no ground truth at {src}. Run step 2 first.")
@@ -72,10 +74,7 @@ def main() -> int:
         return s[len(s) // 2]
 
     smoke = sorted(sorted(v)[1] if len(v) > 1 else sorted(v)[0] for v in by_cluster.values())
-    entry = dataset_for(spec.name)
-    known = {r.doc_id for r in records}
-    smoke.extend(d for d in entry.extra_smoke_docs if d in known and d not in smoke)
-    entry = dataset_for(spec.name)
+    entry = dataset_for(spec.name, a.dataset)
     known = {r.doc_id for r in records}
     smoke.extend(d for d in entry.extra_smoke_docs if d in known and d not in smoke)
     pilot = sorted(mid(v) for v in by_keyset.values())

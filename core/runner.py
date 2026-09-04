@@ -1,29 +1,35 @@
 """Run the frozen DocuXray pipeline over a benchmark plan.
 
-Arms mirror production's ACTUAL stage order, verified against the worker enqueue chain:
+TWO arms, both of which exist as durable artifacts in production:
+
+    RAW    extraction + extraction_postprocessing          == judge_worker's input
+                                                              (pages.$.extraction_postprocessing_result)
+    FINAL  RAW + judge + refinement + postprocessing        == the shipped output
+                                                              (pages.$.postprocessing_result)
+
+Verified against the worker enqueue chain, not assumed from module names:
 
     extraction_worker ── run_extraction_postprocessing_pipeline ──> judge_queue
     judge_worker ──> refinement_queue
     refinement_worker ──> postprocessing_queue
     postprocessing_worker  (LAST, on refined_data, first_pass=True)
 
-so:
+The type postprocessor runs AFTER refinement. judge_worker.py:88 feeds the judge
+`extraction_postprocessing_result or extraction_result` -- never the postprocessor's output.
+An earlier version of this file ran postprocessing before the judge and so fed it normalised
+numbers it never sees in production, manufacturing a "the judge reverts normalisation" finding
+that was an artifact of the harness. Stage order wrong does not mean a slightly-off number; it
+means a confident, wrong story.
 
-    A  extract                                    raw model capability
-    B  A + extraction_postprocessing              <-- WHAT THE JUDGE ACTUALLY SEES
-    C  B + judge + refinement                     judge contribution
-    D  C + postprocessing(first_pass=True)        the shipped output
+WHAT RAW -> FINAL DOES AND DOES NOT TELL YOU
+The gap spans judge + refinement + postprocessing together. It answers "does the machinery
+after extraction help, end to end?" -- a real product question -- but it cannot attribute a
+change to the judge specifically rather than to the final postprocessor.
+Nothing is lost by not storing the intermediates: extraction and the judge report are both
+cached, and refinement and postprocessing are deterministic, so the intermediate states can be
+reconstructed later at zero cost. See scripts/derive_arms.py.
 
-The type postprocessor (invoice_postprocessor) runs AFTER refinement, not before it.
-judge_worker.py:88 feeds the judge `extraction_postprocessing_result or extraction_result`,
-never the postprocessor's output. An earlier version of this file ran postprocessing in arm B
-and so fed the judge normalised numbers it never sees in production -- which manufactured a
-"the judge reverts normalisation" finding that was an artifact of the harness, not a defect in
-the product. Getting the stage order wrong does not produce a slightly-off number; it produces
-a confident, wrong story.
-
-B and D add NO model call and refinement adds none either, so one document is still
-4 extraction calls + 5 judge sections, and all four arms come out of that single pass.
+Both arms come out of ONE pass: 4 extraction calls + 5 judge sections per document.
 
 Nothing here mutates the product. job_id is always None, which is what keeps Redis and MongoDB
 out of the path (every publish/persist site in extraction and the judge is guarded by it).
@@ -31,11 +37,14 @@ out of the path (every publish/persist site in extraction and the judge is guard
 EVERY STAGE IS WRITTEN TO DISK THE MOMENT IT RETURNS, under
 
     runs/<id>/stages/<doc_id>/00_status.json                     progress, updated per stage
-                              01_extract_raw.json                arm A, straight from Gemini
-                              02_extraction_postprocessing.json  arm B, the judge's input
+                              01_extract_raw.json                straight from Gemini
+                              02_extraction_postprocessing.json  >> arm RAW  (the judge's input)
                               03_judge_report.json               the judge's verdict
-                              04_refined.json                    arm C
-                              05_postprocessed.json              arm D, the shipped output
+                              04_refined.json                    intermediate, not scored
+                              05_postprocessed.json              >> arm FINAL (shipped output)
+
+Only 02 and 05 are scored. 01 and 04 are kept because they cost nothing to write and make a
+failed document diagnosable; step6 and step7 never read them.
 
 so a document that dies in the judge still leaves its extraction behind, and a long run can be
 watched by tailing 00_status.json instead of guessing. runs/<id>/raw/<doc_id>.json is unchanged
@@ -62,7 +71,8 @@ sys.path.insert(0, str(_ROOT))
 
 from config import load, load_env                      # noqa: E402
 from core.canonical import read_jsonl                       # noqa: E402
-import doctypes                                            # noqa: E402
+import doctypes
+from registry import dataset_for, gt_dir as _gt_dir                                            # noqa: E402
 
 
 class SpendCapExceeded(RuntimeError):
@@ -77,6 +87,10 @@ class StageTimeout(RuntimeError):
 # interpreter open, but a run that leaked any is not a clean run and says so.
 _LEAKED: List[str] = []
 _LEAKED_LOCK = threading.Lock()
+
+# The only two arms. Both are durable artifacts in production; everything between them is
+# deterministic given (RAW, judge report) and so is reconstructible rather than stored.
+ARMS = ("RAW", "FINAL")
 
 STAGE_FILES = {
     "extract":                    "01_extract_raw.json",
@@ -142,6 +156,28 @@ class DocResult:
     stage_ms: Dict[str, float] = field(default_factory=dict)     # harness wall clock
 
 
+
+def _image_prep_version() -> str:
+    """ai_backend's image-prep version, or a marker when ai_backend is not importable.
+
+    Reported rather than raised: the harness's own control-flow tests stub ai_backend out
+    entirely, and a manifest field must not be the reason they cannot run.
+    """
+    try:
+        from ai.pipeline_core import IMAGE_PREP_VERSION
+        return IMAGE_PREP_VERSION
+    except Exception:                                                # noqa: BLE001
+        return "unavailable"
+
+
+def _tail_version() -> str:
+    try:
+        from ai.pipeline_core import TAIL_VERSION
+        return TAIL_VERSION
+    except Exception:                                                # noqa: BLE001
+        return "unavailable"
+
+
 class Runner:
     # Defaults if config.yaml carries no run.stage_timeouts block. `judge` is deliberately
     # generous: a legitimate totals section has been observed at 136s, so anything under about
@@ -150,8 +186,34 @@ class Runner:
 
     def __init__(self, cfg: Dict[str, Any], arms: List[str], run_id: str,
                  stage_timeouts: Optional[Dict[str, float]] = None):
+        arms = [a.strip().upper() for a in arms if a.strip()]
+        unknown = [a for a in arms if a not in ARMS]
+        if unknown:
+            hint = ""
+            if set(unknown) & {"A", "B", "C", "D"}:
+                hint = ("\n   The old four-arm names are gone. B -> RAW, D -> FINAL; "
+                        "A (pre-postprocessing extraction) and C (pre-postprocessing refined) "
+                        "are no longer scored -- reconstruct them with scripts/derive_arms.py.")
+            raise ValueError(f"unknown arm(s) {unknown}; valid arms are {sorted(ARMS)}.{hint}")
+        if not arms:
+            raise ValueError(f"no arms requested; valid arms are {sorted(ARMS)}")
         self.cfg, self.arms, self.run_id = cfg, arms, run_id
         self.doc_type = cfg["run"]["doc_type"]
+        # Which of the quality stage's two clean-image branches to reproduce. Not a debug
+        # switch: rotation.detect_and_correct re-encodes to JPEG whenever the rotation model
+        # returns detections (the modal case, and the default here) and passes the source
+        # bytes through untouched when it returns none. Recorded in the manifest so a run
+        # states which input it measured rather than leaving it to be inferred.
+        prep = str(cfg["run"].get("image_prep", "quality_clean_jpeg")).strip().lower()
+        if prep not in ("quality_clean_jpeg", "source_bytes"):
+            raise ValueError(
+                f"run.image_prep must be 'quality_clean_jpeg' (what the app ships) or "
+                f"'source_bytes' (the quality stage's no-detection branch); got {prep!r}")
+        self.image_prep = prep
+        self.quality_transform = prep == "quality_clean_jpeg"
+        # Set by _postprocess so the stage dump can carry the warnings and format-contract
+        # verdict the worker persists alongside the data.
+        self._last_postprocess = None
         self.cap = float(cfg["run"]["spend_cap_usd"])
         self.early_abort_after = int(cfg["run"].get("early_abort_after", 0))
         self.cache_dir = _ROOT / cfg["cache"]["dir"] if cfg["cache"]["enabled"] else None
@@ -195,10 +257,18 @@ class Runner:
         a key that ignores the input will happily serve a cached verdict computed from data the
         pipeline no longer produces. That is how a stage-order bug survives a re-run.
         """
+        from ai.pipeline_core import IMAGE_PREP_VERSION
+
         h = hashlib.sha256(image.read_bytes()).hexdigest()[:16]
         model = self.cfg["models"]["extraction" if stage == "extract" else "judge"]
         pv = self.cfg.get("prompt_version", "frozen")
-        key = f"{h}.{model}.{pv}.{stage}"
+        # The image-prep version is part of the key because both model stages see the prepared
+        # bytes, not the file on disk: change the preparation and every cached extraction and
+        # verdict describes an input that is no longer sent. The tail version deliberately is
+        # NOT in the key -- the tail is a free stage, never cached, and folding it in here
+        # would re-pay for extraction every time a postprocessor changes.
+        prep = f"{IMAGE_PREP_VERSION}{'' if self.quality_transform else '-src'}"
+        key = f"{h}.{model}.{pv}.{prep}.{stage}"
         if payload is not None:
             blob = json.dumps(payload, sort_keys=True, default=str).encode("utf-8")
             key += "." + hashlib.sha256(blob).hexdigest()[:12]
@@ -231,8 +301,7 @@ class Runner:
         body = {
             "doc_id": r.doc_id,
             "stage": stage,
-            "arm": {"extract": "A", "extraction_postprocessing": "B",
-                    "judge": None, "refine": "C", "postprocess": "D"}.get(stage),
+            "arm": {"extraction_postprocessing": "RAW", "postprocess": "FINAL"}.get(stage),
             "utc": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()),
             "cached": bool(r.cached_stages.get(stage, False)),
             "stage_ms": round(r.stage_ms.get(stage, 0.0), 1),
@@ -296,29 +365,35 @@ class Runner:
 
     # ---------------------------------------------------------------- stages
     def _extraction_postprocessing(self, raw: Dict[str, Any]) -> Dict[str, Any]:
-        """Arm B: field removal + leaf expansion + totals conversion. No model call.
+        """The second half of arm RAW: field removal + leaf expansion + totals conversion.
+        No model call.
 
         This is exactly what the judge is fed in production (judge_worker.py:88). It does NOT
-        include the type postprocessor -- that runs last, in arm D.
+        include the type postprocessor -- that runs last, and only in arm FINAL.
         """
         from ai.extraction_postprocessing.core.service import run_extraction_postprocessing
         import copy
         return run_extraction_postprocessing(copy.deepcopy(raw), self.doc_type)
 
     def _postprocess(self, data: Dict[str, Any]) -> Dict[str, Any]:
-        """Arm D: the type postprocessor, run on REFINED data, exactly as
-        postprocessing_worker.py:121 does -- unwrap, process(first_pass=True), re-wrap."""
-        from ai.postprocessing import get_postprocessor, get_wrapper_key
-        import copy
+        """The last stage of arm FINAL, delegated to the same function the worker calls.
 
-        out = copy.deepcopy(data)
-        processor = get_postprocessor(self.doc_type)
-        wrapper = get_wrapper_key(self.doc_type)
-        if wrapper and isinstance(out.get(wrapper), dict):
-            out[wrapper] = processor.process(out[wrapper], job_id=None, first_pass=True)
-        else:
-            out = processor.process(out, job_id=None, first_pass=True)
-        return out
+        `ai.pipeline_core.postprocess_page` IS postprocessing_worker's body: unwrap,
+        process(first_pass=True), format contract, re-wrap. Calling it rather than
+        re-implementing it is the whole point -- the previous version of this method stopped
+        after process() and never ran `validate_format` + `apply_format_nulls`, which the
+        worker applies immediately afterwards (postprocessing_worker.py:126-149 as it then
+        was). Because that step only ever nulls leaves, arm FINAL could score a field the
+        product ships as null: the benchmark was flattering the system it was measuring.
+
+        The warnings and format_validation the worker persists are kept on the result so the
+        stage dump can carry them; only `.data` is scored.
+        """
+        from ai.pipeline_core import postprocess_page
+
+        outcome = postprocess_page(data, self.doc_type, job_id=None)
+        self._last_postprocess = outcome
+        return outcome.data
 
     def _extract(self, r: DocResult, image: pathlib.Path, doc_id: str):
         key = self._cache_key(image, "extract")
@@ -327,10 +402,27 @@ class Runner:
             r.cached_stages["extract"] = True
             return hit["data"], hit["metadata"]
         r.cached_stages["extract"] = False
+        from ai.pipeline_core import IMAGE_PREP_VERSION, prepare_extraction_image
+
+        # Feed the extractor the bytes production feeds it. The app never extracts from the
+        # uploaded file: it extracts from the quality stage's clean image, which on the modal
+        # path is a `convert("RGB")` + default-quality JPEG re-encode of the source
+        # (ai/quality/rotation.py:170) served under a `.jpg` key. Handing this harness the
+        # original PNG measured a pipeline the product does not run, and JPEG chroma
+        # subsampling degrades exactly the fine print that percentages and totals are set in.
         t0 = time.time()
-        res = self.svc.extract(str(image), part="all", document_id=doc_id, job_id=None)
+        img_bytes, mime = prepare_extraction_image(
+            image.read_bytes(), apply_quality_transform=self.quality_transform)
+        res = self.svc.extract_from_buffer(
+            img_bytes, mime, part="all", document_id=doc_id, job_id=None)
         raw, meta = res.data, res.metadata
         meta["wall_ms"] = (time.time() - t0) * 1000
+        meta["image_prep"] = {
+            "version": IMAGE_PREP_VERSION,
+            "quality_transform": self.quality_transform,
+            "mime": mime,
+            "source_bytes": len(img_bytes),
+        }
         self._cache_put(key, {"data": raw, "metadata": meta})
         return raw, meta
 
@@ -372,32 +464,35 @@ class Runner:
                 raise FileNotFoundError(image)
             self._write_status(r)
 
-            # ---- arm A -------------------------------------------------------------
+            # ---- extraction: paid, and needed by BOTH arms -------------------------
             raw, meta = self._stage(r, "extract", lambda: self._extract(r, image, doc_id))
-            r.arms["A"] = raw
             r.latency_ms["extract"] = meta.get("latency_ms") or meta.get("wall_ms", 0)
             self._account(r, meta)
             self._write_stage(r, "extract", raw, metadata=meta,
                               model=self.cfg["models"]["extraction"],
                               image=str(image), latency_ms=r.latency_ms["extract"])
 
-            # ---- arm B (free) ------------------------------------------------------
-            if {"B", "C", "D"} & set(self.arms):
-                r.arms["B"] = self._stage(r, "extraction_postprocessing",
-                                          lambda: self._extraction_postprocessing(raw),
-                                          budget="free")
-                self._write_stage(r, "extraction_postprocessing", r.arms["B"],
-                                  note="this, unwrapped, is exactly what the judge is fed "
-                                       "(judge_worker.py:88)")
+            # ---- RAW = extraction + extraction_postprocessing = the judge's input ----
+            # Free: no model call. Computed unconditionally because FINAL is built on it.
+            raw_pp = self._stage(r, "extraction_postprocessing",
+                                 lambda: self._extraction_postprocessing(raw), budget="free")
+            self._write_stage(r, "extraction_postprocessing", raw_pp,
+                              note="this, unwrapped, is exactly what the judge is fed "
+                                   "(judge_worker.py:88)")
+            if "RAW" in self.arms:
+                r.arms["RAW"] = raw_pp
 
-            # ---- arm C -------------------------------------------------------------
-            if {"C", "D"} & set(self.arms):
-                from ai.judge.pipeline import _EXTRACTION_WRAPPER_KEYS
+            # ---- FINAL = RAW + judge + refinement + postprocessing = shipped output --
+            if "FINAL" in self.arms:
+                # WRAPPER_KEYS rather than ai.judge.pipeline._EXTRACTION_WRAPPER_KEYS: the same
+                # map, but reaching it through the judge package drags in the genai client at
+                # import time, which the deterministic stages have no use for and which makes
+                # this branch unimportable wherever the SDK is not installed.
+                from ai.pipeline_core import WRAPPER_KEYS
                 from ai.refinement.pipeline import run_refinement_pipeline
 
-                base = r.arms["B"]
-                wrapper = _EXTRACTION_WRAPPER_KEYS.get(self.doc_type)
-                unwrapped = base.get(wrapper, base) if wrapper else base
+                wrapper = WRAPPER_KEYS.get(self.doc_type)
+                unwrapped = raw_pp.get(wrapper, raw_pp) if wrapper else raw_pp
                 jkey = self._cache_key(image, "judge", unwrapped)
 
                 report = self._stage(r, "judge",
@@ -411,19 +506,25 @@ class Runner:
                                   total_issues=report.get("total_issues"),
                                   confidence=report.get("confidence"))
 
-                r.arms["C"] = self._stage(
+                # The intermediate refined state is written to disk for inspection but is NOT
+                # an arm: it is deterministic from (raw_pp, report), both of which are kept.
+                refined = self._stage(
                     r, "refine",
-                    lambda: run_refinement_pipeline(base, report, self.doc_type)["refined_data"],
+                    lambda: run_refinement_pipeline(raw_pp, report, self.doc_type)["refined_data"],
                     budget="free")
-                self._write_stage(r, "refine", r.arms["C"])
+                self._write_stage(r, "refine", refined,
+                                  note="intermediate, not scored: deterministic from "
+                                       "02_extraction_postprocessing.json + 03_judge_report.json")
 
-            # ---- arm D (free): the shipped output --------------------------------
-            if "D" in self.arms and "C" in r.arms:
-                r.arms["D"] = self._stage(r, "postprocess",
-                                          lambda: self._postprocess(r.arms["C"]), budget="free")
-                self._write_stage(r, "postprocess", r.arms["D"],
-                                  note="the shipped output: postprocessing(first_pass=True) "
-                                       "on refined data")
+                r.arms["FINAL"] = self._stage(r, "postprocess",
+                                              lambda: self._postprocess(refined), budget="free")
+                pp = self._last_postprocess
+                self._write_stage(r, "postprocess", r.arms["FINAL"],
+                                  note="the shipped output: ai.pipeline_core.postprocess_page "
+                                       "on refined data -- the same call postprocessing_worker "
+                                       "makes, format contract included",
+                                  warnings=(pp.warnings if pp else None),
+                                  format_validation=(pp.format_validation if pp else None))
 
             r.ok = True
             r.cached = bool(r.cached_stages) and all(r.cached_stages.values())
@@ -467,7 +568,7 @@ class Runner:
     def per_doc_budget(self) -> float:
         """Worst case for one document, from the stage budgets that now bound it."""
         t = self.stage_timeouts
-        return t["extract"] + (t["judge"] if {"C", "D"} & set(self.arms) else 0.0) + 3 * t["free"]
+        return t["extract"] + (t["judge"] if "FINAL" in self.arms else 0.0) + 3 * t["free"]
 
     def run_plan(self, doc_ids: List[str], images: Dict[str, str],
                  doc_timeout: Optional[float] = None) -> List[DocResult]:
@@ -550,6 +651,10 @@ class Runner:
 
     # ---------------------------------------------------------------- manifest
     def manifest(self, results: List[DocResult], plan: Dict[str, Any], extra=None) -> Dict:
+        """The run's own account of itself. Records the image-prep mode and tail version
+        because a number is not reproducible without them: two runs of the same plan against
+        the same models differ if one fed the extractor source PNGs and the other the JPEG
+        re-encode the app actually sends."""
         ok = [r for r in results if r.ok]
         stage_fail: Dict[str, int] = {}
         for r in results:
@@ -570,7 +675,12 @@ class Runner:
             "leaked_threads": sorted(_LEAKED),
             "arms": self.arms,
             "doc_type": self.doc_type,
+            # Recorded because doc_type alone no longer identifies the ground truth a run was
+            # scored against — step7 and the review export read this back.
+            "dataset": self.cfg["run"].get("dataset"),
             "models": self.cfg["models"],
+            "image_prep": {"mode": self.image_prep, "version": _image_prep_version()},
+            "tail_version": _tail_version(),
             "stage_timeouts_s": self.stage_timeouts,
             "concurrency": int(self.cfg["run"].get("concurrency", 2)),
             "spend_cap_usd": self.cap,
@@ -582,7 +692,6 @@ class Runner:
             "git": _git_shas(),
             "harness_version": "1.1",
             "field_map_version": _map_version(self.cfg.get("_map_path")),
-            "dataset": self.cfg.get("_dataset_name"),
             "frozen_system": True,
         }
         if extra:
@@ -618,9 +727,9 @@ def main(argv=None) -> int:
     import argparse
     ap = argparse.ArgumentParser()
     ap.add_argument("--plan", required=True)
-    ap.add_argument("--arms", default="A,B,C,D",
-                    help="A extract · B +extraction_postprocessing (judge input) · "
-                         "C +judge+refine · D +postprocessing (shipped output)")
+    ap.add_argument("--arms", default="RAW,FINAL",
+                    help="RAW = extraction + extraction_postprocessing (what the judge sees) · "
+                         "FINAL = RAW + judge + refinement + postprocessing (shipped output)")
     ap.add_argument("--limit", type=int, default=0, help="first N documents only (cost probe)")
     ap.add_argument("--run-id", default=None)
     ap.add_argument("--resume", action="store_true",
@@ -634,10 +743,22 @@ def main(argv=None) -> int:
                          "section is the one hang observed in practice.")
     ap.add_argument("--concurrency", type=int, default=None,
                     help="override config.yaml; lower this first if a run stalls")
+    ap.add_argument("--dataset", default=None,
+                    help="override run.dataset; required when a doc type has several datasets")
+    ap.add_argument("--image-prep", default=None,
+                    choices=("quality_clean_jpeg", "source_bytes"),
+                    help="override run.image_prep. quality_clean_jpeg reproduces the JPEG "
+                         "re-encode the quality stage hands the extractor (what ships); "
+                         "source_bytes sends the file as-is. Part of the cache key, so "
+                         "switching modes re-pays for extraction and the judge.")
     a = ap.parse_args(argv)
 
     load_env()
     cfg = load()
+    if a.dataset:
+        cfg["run"]["dataset"] = a.dataset
+    if a.image_prep:
+        cfg["run"]["image_prep"] = a.image_prep
     sys.path.insert(0, cfg["paths"]["ai_backend"])
 
     plan = json.loads(pathlib.Path(a.plan).read_text(encoding="utf-8"))
@@ -645,7 +766,8 @@ def main(argv=None) -> int:
     doc_ids = plan["doc_ids"][: a.limit] if a.limit else plan["doc_ids"]
 
     spec = doctypes.get(cfg["run"]["doc_type"])
-    gt = {r.doc_id: r for r in read_jsonl(str(_ROOT / "gt" / spec.name / "ground_truth.jsonl"))}
+    gt = {r.doc_id: r for r in read_jsonl(
+        str(_gt_dir(spec.name, cfg["run"].get("dataset")) / "ground_truth.jsonl"))}
     not_in_gt = [d for d in doc_ids if d not in gt]
     if not_in_gt:
         print(f"!! {len(not_in_gt)} plan documents are not in the ground truth: {not_in_gt[:5]}")
@@ -653,7 +775,13 @@ def main(argv=None) -> int:
 
     # Ground-truth image paths are relative to the dataset root so the same gt/fatura.jsonl
     # works on any machine. Absolute paths from an older build are still honoured.
-    dataset = pathlib.Path(cfg["paths"]["dataset"])
+    # The image root belongs to the DATASET, not to a fixed config key. Reading
+    # paths["dataset"] here sent DocILE's plan looking for its images under FATURA's root and
+    # reported all 100 as missing — the pre-flight check did its job, but the message blamed
+    # the data instead of the lookup. registry.dataset_for is the single place that knows
+    # which paths.* entry a dataset lives under.
+    entry = dataset_for(spec.name, cfg["run"].get("dataset"))
+    dataset = pathlib.Path(cfg["paths"][entry.root_config_key])
     images = {}
     for d in doc_ids:
         raw = pathlib.Path(gt[d].image_path)
@@ -663,6 +791,7 @@ def main(argv=None) -> int:
     if absent:
         # Fail once, before spending anything, rather than N identical errors.
         print(f"!! {len(absent)} of {len(doc_ids)} images are missing under the dataset root.")
+        print(f"   dataset      : {entry.name}  (paths.{entry.root_config_key})")
         print(f"   dataset root : {dataset}")
         print(f"   first missing: {images[absent[0]]}")
         if not dataset.exists():
@@ -674,8 +803,12 @@ def main(argv=None) -> int:
     run_id = a.run_id or f"{pathlib.Path(a.plan).stem}-{time.strftime('%Y%m%d-%H%M%S')}"
     if a.concurrency:
         cfg["run"]["concurrency"] = a.concurrency
-    runner = Runner(cfg, [x.strip().upper() for x in a.arms.split(",")], run_id,
-                    stage_timeouts={"extract": a.extract_timeout, "judge": a.judge_timeout})
+    try:
+        runner = Runner(cfg, a.arms.split(","), run_id,
+                        stage_timeouts={"extract": a.extract_timeout, "judge": a.judge_timeout})
+    except ValueError as exc:
+        print(f"!! {exc}")            # a bad --arms must not read as a crash
+        return 2
 
     carried: List[DocResult] = []
     if a.resume:

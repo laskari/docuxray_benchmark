@@ -67,8 +67,8 @@ SCALAR_RULES: Dict[str, List[Target]] = {
                    T("totals.taxAmount", "tax_amount"),
                    T("currency", "money_currency")],
     # GT discount is a POSITIVE MAGNITUDE: invoice_postprocessor._normalize_totals converts a
-    # negative discountTotal to its absolute value, so a negative GT would make arm B score
-    # worse than arm A as a pure sign artifact.
+    # negative discountTotal to its absolute value, so a negative GT would make the
+    # postprocessed arm score worse than bare extraction as a pure sign artifact.
     "DISCOUNT":   [T("totals.discountPercentage", "pct_in_parens"),
                    T("totals.discountTotal", "money_abs")],
     # Derived target: compared against paymentTerms.raw_text + customerMemo merged. DocuXray

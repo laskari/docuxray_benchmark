@@ -25,10 +25,16 @@ _ROOT = pathlib.Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(_ROOT))
 
 from core.canonical import read_jsonl                                        # noqa: E402
-from core.matching import (MatchRule, compare, load_rule_registry,          # noqa: E402
-                          merge_prediction_sources)
-import doctypes                                                             # noqa: E402
-from core.normalize import _Absent                                           # noqa: E402
+from core.matching import (                                              # noqa: E402
+    MatchRule,
+    compare,
+    load_rule_registry,
+    load_type_registry,
+    merge_prediction_sources,
+)
+import doctypes                                                          # noqa: E402
+from core.normalize import _Absent                                       # noqa: E402
+from registry import gt_dir as _gt_dir, dataset_for                    # noqa: E402
 
 BOOTSTRAP_ITERS = 2000
 HEADLINE_FLOOR = 20
@@ -109,6 +115,112 @@ def score_document(gt_rec, prediction: Dict[str, Any], rules, spec=None) -> List
             "no_tax": bool(gt_rec.meta.get("no_tax_label")),
         })
     return rows
+
+
+def score_document_lists(gt_rec, prediction: Dict[str, Any], spec=None, leaf_types=None):
+    """Score every repeated section this document annotates. Returns (cells, summaries).
+
+    Kept separate from score_document because a repeated section produces TWO kinds of result
+    that must not be conflated: per-cell verdicts, which join the per-path table, and a
+    per-document row alignment (precision / recall / F1), which does not. Averaging cell
+    accuracy without publishing row recall would let a model that emits one perfect row and
+    drops nine look excellent.
+
+    A doc type with no list_paths, or a dataset that does not annotate them, returns nothing —
+    which is how FATURA passes through here untouched.
+    """
+    from core import rows as _rows
+
+    spec = spec or doctypes.get("invoice")
+    leaf_types = leaf_types or {}
+    flat_pred = unwrap(prediction, spec)
+    cells, summaries = [], []
+    all_targets = gt_rec.meta.get("row_targets") or {}
+    all_keys = gt_rec.meta.get("row_match_keys") or {}
+    all_text = gt_rec.meta.get("row_text_leaves") or {}
+    for list_path in sorted(spec.list_paths):
+        if list_path not in gt_rec.annotated_fields:
+            continue                      # this dataset cannot speak to this section
+        targets = all_targets.get(list_path)
+        if not targets:
+            # The dataset annotates the section but never said which schema leaves its row
+            # keys correspond to. Scoring it on guessed leaves would invent a number, so it is
+            # skipped and the omission is visible in the report as a section with no rows.
+            continue
+        gt_rows = gt_rec.gt.get(list_path) or []
+        pred_rows = _resolve(flat_pred, list_path)
+        out = _rows.score_rows(
+            gt_rows, pred_rows,
+            list_path=list_path,
+            gt_match_keys=tuple(all_keys.get(list_path) or _rows.PRED_TEXT_LEAVES),
+            pred_text_leaves=tuple(all_text.get(list_path) or _rows.PRED_TEXT_LEAVES),
+            row_targets={k: tuple(v) for k, v in targets.items()},
+            leaf_types=leaf_types,
+            doc_id=gt_rec.doc_id, cluster_id=gt_rec.cluster_id, spec=spec)
+        cells.extend(out["cells"])
+        summaries.append(out["summary"])
+    return cells, summaries
+
+
+def _resolve(obj: Any, dotted: str) -> list:
+    """Follow a dotted path to a list. 'totals.otherCharges' is nested, 'lineItems' is not —
+    a flat .get() silently returned nothing for the nested one and reported 0 recovery."""
+    cur = obj
+    for part in dotted.split("."):
+        if not isinstance(cur, dict):
+            return []
+        cur = cur.get(part)
+    return cur if isinstance(cur, list) else []
+
+
+def aggregate_lists_by_path(summaries: List[Dict[str, Any]]) -> Dict[str, Any]:
+    """One block per repeated section. Never pooled: line items and document-level charges are
+    different things measured on different denominators, and one average over both is a number
+    about nothing."""
+    by_path: Dict[str, List[Dict[str, Any]]] = defaultdict(list)
+    for s in summaries:
+        by_path[s.get("list_path", "unknown")].append(s)
+    return {path: aggregate_lists(rows) for path, rows in sorted(by_path.items())}
+
+
+def aggregate_lists(summaries: List[Dict[str, Any]]) -> Dict[str, Any]:
+    """Corpus-level row metrics. Micro over rows, macro over documents, both published.
+
+    They answer different questions and can disagree sharply: micro is dominated by the 44-row
+    document, macro treats every invoice as one observation. A single number here would hide
+    whichever behaviour is worse.
+    """
+    if not summaries:
+        return {}
+    docs = [s for s in summaries if s.get("n_gt_rows")]
+    tot_gt = sum(s["n_gt_rows"] for s in docs)
+    tot_pred = sum(s["n_pred_rows"] for s in docs)
+    tot_match = sum(s["n_matched"] for s in docs)
+    micro_p = tot_match / tot_pred if tot_pred else None
+    micro_r = tot_match / tot_gt if tot_gt else None
+    macro = [s["row_f1"] for s in docs if s["row_f1"] is not None]
+    cells = sum(s["n_cells"] for s in docs)
+    return {
+        "n_docs_with_rows": len(docs),
+        "n_docs_without_rows": len(summaries) - len(docs),
+        "n_gt_rows": tot_gt, "n_pred_rows": tot_pred, "n_matched_rows": tot_match,
+        "micro_row_precision": micro_p,
+        "micro_row_recall": micro_r,
+        "micro_row_f1": (2 * micro_p * micro_r / (micro_p + micro_r)
+                         if micro_p and micro_r else 0.0),
+        "macro_row_f1": (sum(macro) / len(macro)) if macro else None,
+        "row_exact_rate": (sum(s["n_rows_exact"] for s in docs) / tot_match
+                           if tot_match else None),
+        "table_exact_rate": (sum(1 for s in docs if s["table_exact"]) / len(docs)
+                             if docs else None),
+        "n_cells_scored": cells,
+        "cell_accuracy_on_matched_rows": (sum(s["n_cells_correct"] for s in docs) / cells
+                                          if cells else None),
+        "note": ("Row recall and cell accuracy are independent measurements and must be read "
+                 "together: cell accuracy is computed ONLY over matched rows, so a model that "
+                 "drops rows raises it. Documents with no ground-truth rows are counted "
+                 "separately and excluded from every row denominator."),
+    }
 
 
 # ---------------------------------------------------------------------------------------
@@ -195,10 +307,16 @@ def aggregate(rows, coverage) -> Dict[str, Any]:
 # judge: detector confusion matrix + HARM
 # ---------------------------------------------------------------------------------------
 
-def judge_metrics(rows_b, rows_c, judge_by_doc) -> Dict[str, Any]:
-    """Arm B is the baseline the judge sees; arm C is what it produced."""
-    b = {(r["doc_id"], r["path"]): r for r in rows_b}
-    c = {(r["doc_id"], r["path"]): r for r in rows_c}
+def judge_metrics(rows_raw, rows_final, judge_by_doc) -> Dict[str, Any]:
+    """RAW is what the judge was shown; FINAL is what the pipeline shipped.
+
+    The detector matrix is exact -- it asks whether the judge flagged a field that was in fact
+    wrong in RAW, which is precisely the input it saw. Fixed/harmed, however, span judge +
+    refinement + postprocessing together, so they measure the whole post-extraction machinery
+    rather than the judge alone.
+    """
+    b = {(r["doc_id"], r["path"]): r for r in rows_raw}
+    c = {(r["doc_id"], r["path"]): r for r in rows_final}
     tp = fp = fn = tn = 0
     fixed = harmed = 0
     for key, rb in b.items():
@@ -223,8 +341,10 @@ def judge_metrics(rows_b, rows_c, judge_by_doc) -> Dict[str, Any]:
         "fields_harmed": harmed,
         "net_lift_fields": fixed - harmed,
         "harm_rate": harmed / max(sum(1 for r in b.values() if r["ok"]), 1),
-        "note": ("harm_rate is the share of fields CORRECT in arm B that arm C got WRONG. "
-                 "A positive net lift with a high harm rate is not a good trade."),
+        "note": ("harm_rate is the share of fields CORRECT in RAW that FINAL got WRONG. "
+                 "A positive net lift with a high harm rate is not a good trade. "
+                 "fixed/harmed span judge + refinement + postprocessing together; the detector "
+                 "matrix above is judge-specific because RAW is exactly what it was shown."),
     }
 
 
@@ -244,15 +364,28 @@ def _was_flagged(judge: Optional[dict], path: str) -> bool:
 # entry point
 # ---------------------------------------------------------------------------------------
 
-def score_run(run_dir: pathlib.Path, doc_type: str | None = None) -> Dict[str, Any]:
+def score_run(run_dir: pathlib.Path, doc_type: str | None = None,
+              dataset: str | None = None) -> Dict[str, Any]:
     manifest = json.loads((run_dir / "manifest.json").read_text(encoding="utf-8"))
     spec = doctypes.get(doc_type or manifest.get("doc_type", "invoice"))
-    gt_dir = _ROOT / "gt" / spec.name
+    # A run written before the manifest recorded its dataset leaves this null, and the
+    # doc type alone can no longer name the ground truth; --dataset is the way out.
+    dataset = dataset or manifest.get("dataset")
+    gt_dir = _gt_dir(spec.name, dataset)
+    # Whatever the manifest said, the results report the ground truth actually scored
+    # against — a null here used to print "dataset None" in the header.
+    manifest["dataset"] = dataset_for(spec.name, dataset).name
     gt = {r.doc_id: r for r in read_jsonl(str(gt_dir / "ground_truth.jsonl"))}
     coverage = json.loads((gt_dir / "coverage.json").read_text(encoding="utf-8"))
     rules = load_rule_registry(str(_ROOT / "schema" / f"{spec.name}_leaf_paths.tsv"), spec)
 
     rows_by_arm: Dict[str, list] = defaultdict(list)
+    lists_by_arm: Dict[str, list] = defaultdict(list)
+    cells_by_arm: Dict[str, list] = defaultdict(list)
+    # leaf -> declared schema type, so a repeated section's cells get the same
+    # type-driven match rule as any scalar. load_type_registry is the generated source of
+    # truth; deriving rules by leaf NAME would drift the moment the schema changes.
+    leaf_types = load_type_registry(str(_ROOT / "schema" / f"{spec.name}_leaf_paths.tsv"))
     judge_by_doc: Dict[str, dict] = {}
     n_ok = 0
     for f in sorted((run_dir / "raw").glob("*.json")):
@@ -269,6 +402,17 @@ def score_run(run_dir: pathlib.Path, doc_type: str | None = None) -> Dict[str, A
             if arm.startswith("_") or not isinstance(data, dict):
                 continue
             rows_by_arm[arm].extend(score_document(rec, data, rules, spec))
+            # Repeated-section cells are aggregated SEPARATELY and never folded into the
+            # scalar field-recall denominator. On DocILE100 that denominator would otherwise be
+            # 1,692 line-item cells against ~570 scalar field instances — so the headline
+            # "field recall" would be three-quarters line items, and dominated by whichever
+            # documents happen to have the most rows. A 44-row broadcast log would outweigh
+            # forty invoices. The row-aligned section reports them on their own terms.
+            cells, summaries = score_document_lists(
+                rec, data, spec, leaf_types={p.rsplit(".", 1)[-1]: t
+                                             for p, t in leaf_types.items()})
+            cells_by_arm[arm].extend(cells)
+            lists_by_arm[arm].extend(summaries)
 
     out: Dict[str, Any] = {
         "run_id": manifest["run_id"], "manifest": manifest,
@@ -278,17 +422,42 @@ def score_run(run_dir: pathlib.Path, doc_type: str | None = None) -> Dict[str, A
     }
     for arm in sorted(rows_by_arm):
         agg = aggregate(rows_by_arm[arm], coverage)
-        taxed = [r for r in rows_by_arm[arm] if not r["no_tax"]]
-        agg["no_tax_slice"] = {
-            "all_docs_recall": agg["micro_recall"],
-            "taxed_only_recall": _rate(taxed, RECALL_NUM, RECALL_DEN),
-            "note": ("3,800 of 8,399 scoreable TOTAL values sit on pages with no tax label, "
-                     "where including-tax and excluding-tax are the same figure and the "
-                     "distinction cannot be got wrong. Both numbers are published."),
-        }
+        # The no-tax slice is a FATURA-specific correction: on that corpus 3,800 of 8,399
+        # scoreable TOTAL values sit on pages with no tax label, where including-tax and
+        # excluding-tax are the same figure and the distinction cannot be got wrong. It is
+        # emitted only when the ground truth actually carries the flag — reporting it as
+        # null on a dataset that has no such concept would invite reading it as a finding.
+        # Repeated-section cells never carry it, hence .get rather than [].
+        if any(r.get("no_tax") for r in rows_by_arm[arm]):
+            taxed = [r for r in rows_by_arm[arm] if not r.get("no_tax")]
+            agg["no_tax_slice"] = {
+                "all_docs_recall": agg["micro_recall"],
+                "taxed_only_recall": _rate(taxed, RECALL_NUM, RECALL_DEN),
+                "note": ("3,800 of 8,399 scoreable TOTAL values sit on pages with no tax "
+                         "label, where including-tax and excluding-tax are the same figure "
+                         "and the distinction cannot be got wrong. Both are published."),
+            }
+        sections = aggregate_lists_by_path(lists_by_arm.get(arm) or [])
+        if sections:
+            per_cell: Dict[str, Dict[str, Any]] = defaultdict(
+                lambda: {"n": 0, "correct": 0})
+            for c in cells_by_arm.get(arm) or []:
+                b = per_cell[c["path"]]
+                b["n"] += 1
+                b["correct"] += bool(c["ok"])
+            for path, sec in sections.items():
+                sec["per_cell"] = sorted(
+                    ({"path": k, "n": v["n"], "correct": v["correct"],
+                      "accuracy": v["correct"] / v["n"] if v["n"] else None}
+                     for k, v in per_cell.items() if k.startswith(f"{path}[]")),
+                    key=lambda d: -d["n"])
+            agg["repeated_sections"] = sections
+            agg["repeated_sections_per_doc"] = lists_by_arm[arm]
+            if "lineItems" in sections:
+                agg["line_items"] = sections["lineItems"]      # the headline section
         out["arms"][arm] = agg
-    if "B" in rows_by_arm and "C" in rows_by_arm:
-        out["judge"] = judge_metrics(rows_by_arm["B"], rows_by_arm["C"], judge_by_doc)
+    if "RAW" in rows_by_arm and "FINAL" in rows_by_arm:
+        out["judge"] = judge_metrics(rows_by_arm["RAW"], rows_by_arm["FINAL"], judge_by_doc)
 
     (run_dir / "results.json").write_text(json.dumps(out, indent=2, default=str), encoding="utf-8")
     (run_dir / "results.md").write_text(render(out), encoding="utf-8")
@@ -301,8 +470,10 @@ def render(r: Dict[str, Any]) -> str:
          f"Field map **{r.get('field_map_version')}** · {r['n_documents_scored']} documents · "
          f"models {m['models']['extraction']} / {m['models']['judge']} · "
          f"git {m.get('git')} · cost ${m.get('total_cost_usd', 0):.4f}", "",
-         "Intervals are 95% from a bootstrap resampling **templates**, not documents — 200 "
-         "instances of a FATURA template are one layout observation.", ""]
+         f"dataset **{m.get('dataset') or 'unspecified'}** · "
+         "intervals are 95% from a bootstrap resampling **clusters**, not documents — on "
+         "FATURA a cluster is a template (200 instances are one layout observation); on a "
+         "natural corpus such as DocILE100 the cluster is the document itself.", ""]
     for arm, a in r["arms"].items():
         ci = a["micro_ci95"]
         cis = f" [{ci[0]:.3f}, {ci[1]:.3f}]" if ci[0] is not None else ""
@@ -313,9 +484,14 @@ def render(r: Dict[str, Any]) -> str:
               f"- macro recall (per field, unweighted) {_pct(a['macro_recall'])}",
               f"- headline-eligible fields only: {_pct(a['headline_micro_recall'])}",
               f"- correct-null rate {_pct(a['correct_null_rate'])}  *(own line, never a headline)*",
-              f"- hallucinations (emitted where GT says absent): **{a['hallucination_count']}**",
-              f"- no-tax slice: all docs {_pct(a['no_tax_slice']['all_docs_recall'])} vs "
-              f"taxed only **{_pct(a['no_tax_slice']['taxed_only_recall'])}**", "",
+              f"- hallucinations (emitted where GT says absent): **{a['hallucination_count']}**"
+              + ("" if a.get("hallucination_count") or "no_tax_slice" in a else
+                 "  *(this dataset licenses no authoritative absence — see the map's "
+                 "absence_policy; the figure is structurally zero, not a result)*"), ""]
+        if "no_tax_slice" in a:
+            L += [f"- no-tax slice: all docs {_pct(a['no_tax_slice']['all_docs_recall'])} vs "
+                  f"taxed only **{_pct(a['no_tax_slice']['taxed_only_recall'])}**", ""]
+        L += [
               "| field | rule | n | tmpl | recall | 95% CI | exact | halluc | headline |",
               "|---|---|--:|--:|--:|--|--:|--:|:--:|"]
         for f in a["per_field"]:
@@ -326,17 +502,50 @@ def render(r: Dict[str, Any]) -> str:
                      f"{_pct(f['exact_rate'])} | {f['hallucinations']} | "
                      f"{'yes' if f['headline_eligible'] else '**no**'} |")
         L.append("")
+        for _sec_path, li in (a.get("repeated_sections") or {}).items():
+            f2 = lambda x: "—" if x is None else _pct(x)
+            L += [f"### Arm {arm} — `{_sec_path}` (row-aligned)", "",
+                  f"{li['n_gt_rows']} ground-truth rows across {li['n_docs_with_rows']} "
+                  f"documents; the model emitted {li['n_pred_rows']} and "
+                  f"{li['n_matched_rows']} aligned. {li['n_docs_without_rows']} documents "
+                  f"have no itemised table and are outside every row denominator.", "",
+                  "| | micro (per row) | macro (per document) |",
+                  "|---|--:|--:|",
+                  f"| row precision | {f2(li['micro_row_precision'])} | — |",
+                  f"| row recall | {f2(li['micro_row_recall'])} | — |",
+                  f"| row F1 | {f2(li['micro_row_f1'])} | {f2(li['macro_row_f1'])} |", "",
+                  f"- rows fully correct (every stated cell right, of aligned rows): "
+                  f"**{f2(li['row_exact_rate'])}**",
+                  f"- tables fully correct (no row missed, none invented, every cell right): "
+                  f"**{f2(li['table_exact_rate'])}**",
+                  f"- cell accuracy over ALIGNED rows only: {f2(li['cell_accuracy_on_matched_rows'])} "
+                  f"({li['n_cells_scored']} cells)", "",
+                  "Read row recall and cell accuracy together. Cell accuracy is computed only "
+                  "over rows that aligned, so dropping a difficult row RAISES it — the two "
+                  "numbers are only meaningful side by side, and `table_exact` is the one that "
+                  "cannot be gamed by omission.", ""]
+            if li.get("per_cell"):
+                L += ["| cell | rows stating it | correct | accuracy |", "|---|--:|--:|--:|"]
+                for c in li["per_cell"]:
+                    L.append(f"| `{c['path']}` | {c['n']} | {c['correct']} | "
+                             f"{_pct(c['accuracy'])} |")
+                L += ["", "Each cell's denominator is the rows that ALIGNED AND state a value "
+                          "for it — not the row count. A corpus-wide denominator would count "
+                          "silence as failure wherever a column is sparse.", ""]
+            L += ["*These cells are deliberately absent from the scalar field-recall figure "
+                  "above: pooling them would let a single long table outweigh dozens of "
+                  "invoices.*", ""]
     if "judge" in r:
         j = r["judge"]; c = j["confusion"]
         L += ["## Judge — as an error detector", "",
               "| | flagged | silent |", "|---|--:|--:|",
-              f"| **wrong in arm B** | {c['tp']} | {c['fn']} |",
-              f"| **correct in arm B** | {c['fp']} | {c['tn']} |", "",
+              f"| **wrong in RAW** | {c['tp']} | {c['fn']} |",
+              f"| **correct in RAW** | {c['fp']} | {c['tn']} |", "",
               f"- precision {_pct(j['detector_precision'])} · recall {_pct(j['detector_recall'])} "
               f"· F1 {_pct(j['detector_f1'])}",
               f"- fields fixed **{j['fields_fixed']}** · fields harmed **{j['fields_harmed']}** "
               f"· net {j['net_lift_fields']:+d}",
-              f"- **harm rate {_pct(j['harm_rate'])}** — share of fields correct in B that C got wrong",
+              f"- **harm rate {_pct(j['harm_rate'])}** — share of fields correct in RAW that FINAL got wrong",
               "", f"> {j['note']}", ""]
     return "\n".join(L) + "\n"
 

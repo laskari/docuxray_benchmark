@@ -12,7 +12,7 @@ from core.canonical import read_jsonl
 from core.normalize import normalise_date, normalise_money
 
 ROOT = pathlib.Path(__file__).resolve().parent.parent
-GT = ROOT / "gt" / "invoice" / "ground_truth.jsonl"
+GT = ROOT / "gt" / "invoice" / "fatura" / "ground_truth.jsonl"
 pytestmark = pytest.mark.skipif(not GT.exists(), reason="run scripts/build_gt.py first")
 
 

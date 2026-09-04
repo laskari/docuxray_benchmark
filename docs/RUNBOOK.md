@@ -28,27 +28,29 @@ The response cache means a re-score after a metric fix costs nothing.
 
 ```bash
 # 1. COST PROBE — replaces the thinking-token estimate with a measurement.  ~$0.58
-python steps/step5_run.py --plan gt/invoice/smoke_51.json --arms A,B,C,D --limit 10 \
+python steps/step5_run.py --plan gt/invoice/smoke_51.json --arms RAW,FINAL --limit 10 \
     --run-id costprobe --concurrency 2
 python scripts/recost.py runs/costprobe                    # reproject from the real numbers
 
 # 2. SMOKE — 51 docs, one per template + Template1_Instance0.              ~$2.97
 #    Verification, NOT a measurement. 26/26 scoreable paths, 12/12 policy branches.
-python steps/step5_run.py --plan gt/invoice/smoke_51.json --arms A,B,C,D --run-id smoke
+python steps/step5_run.py --plan gt/invoice/smoke_51.json --arms RAW,FINAL --run-id smoke
 python steps/step7_metrics.py runs/smoke
 
 # 3. PILOT — 99 docs, one per distinct key-set.                            ~$5.76
 #    Then hand-adjudicate EVERY mismatch: model error / GT error / normalisation / mapping.
-python steps/step5_run.py --plan gt/invoice/pilot_99.json --arms A,B,C,D --run-id pilot
+python steps/step5_run.py --plan gt/invoice/pilot_99.json --arms RAW,FINAL --run-id pilot
 python steps/step6_compare.py runs/pilot                   # the adjudication sheet
 python steps/step7_metrics.py runs/pilot
 
 # 4. VARIANCE — the same 50 docs three times, to establish the noise floor. ~$8.73
-for i in 1 2 3; do python steps/step5_run.py --plan gt/invoice/pilot_99.json --arms A \
+#    RAW only: the judge is skipped entirely, so this measures extraction noise and costs
+#    only the extraction calls.
+for i in 1 2 3; do python steps/step5_run.py --plan gt/invoice/pilot_99.json --arms RAW \
     --limit 50 --run-id "variance-$i"; done
 
 # 5. MAIN — 1,000 docs, 50 templates x 20. The reported numbers.           ~$58.20
-python steps/step5_run.py --plan gt/invoice/main_1000.json --arms A,B,C,D --run-id main
+python steps/step5_run.py --plan gt/invoice/main_1000.json --arms RAW,FINAL --run-id main
 python steps/step7_metrics.py runs/main
 ```
 
@@ -84,7 +86,7 @@ Then `--resume` with `--judge-timeout 600`. Full account in `docs/05_RUNNING.md`
 ## What to look at first in `results.md`
 
 1. `hallucinations` — emitted where GT says the field is absent. The damaging class.
-2. **`harm rate`** — fields correct in arm B that arm C got wrong. A positive net lift with a
+2. **`harm rate`** — fields correct in RAW that FINAL got wrong (judge + refinement + postprocessing together; the gap does not attribute to the judge alone). A positive net lift with a
    high harm rate is not a good trade, and this is the number that decides whether the judge
    earns its place.
 3. `no-tax slice` — all-docs vs taxed-only recall. 45% of scoreable TOTAL values sit on pages

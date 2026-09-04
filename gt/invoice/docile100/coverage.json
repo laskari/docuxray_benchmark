@@ -1,0 +1,111 @@
+{
+  "dataset": "docile100",
+  "doc_type": "invoice",
+  "n_docs": 100,
+  "n_clusters": 100,
+  "n_keysets": 3,
+  "n_gt_line_item_rows": 450,
+  "scoreable_paths": 10,
+  "headline_eligible_paths": 7,
+  "headline_bar": {
+    "min_docs": 30,
+    "min_distinct_values": 20
+  },
+  "exclusions": {
+    "day and month are both <= 12 and differ, so M/D vs D/M cannot be resolved; DocIL": 44,
+    "document has no itemised table (0 GT rows)": 3,
+    "GT value embeds a time component, which invoiceInfo.issueDate's own schema descr": 1
+  },
+  "paths": [
+    {
+      "path": "invoiceInfo.documentNumber",
+      "n_docs": 89,
+      "n_clusters": 89,
+      "distinct_gt_values": 89,
+      "absent_docs": 0,
+      "headline_eligible": true,
+      "constant_across_clusters": false
+    },
+    {
+      "path": "invoiceInfo.issueDate",
+      "n_docs": 95,
+      "n_clusters": 95,
+      "distinct_gt_values": 94,
+      "absent_docs": 0,
+      "headline_eligible": true,
+      "constant_across_clusters": false
+    },
+    {
+      "path": "invoiceInfo.issueDateISO",
+      "n_docs": 71,
+      "n_clusters": 71,
+      "distinct_gt_values": 67,
+      "absent_docs": 0,
+      "headline_eligible": true,
+      "constant_across_clusters": false
+    },
+    {
+      "path": "lineItems",
+      "n_docs": 97,
+      "n_clusters": 97,
+      "distinct_gt_values": 97,
+      "absent_docs": 0,
+      "headline_eligible": true,
+      "constant_across_clusters": false
+    },
+    {
+      "path": "parties.seller.name",
+      "n_docs": 100,
+      "n_clusters": 100,
+      "distinct_gt_values": 92,
+      "absent_docs": 0,
+      "headline_eligible": true,
+      "constant_across_clusters": false
+    },
+    {
+      "path": "totals.discountTotal",
+      "n_docs": 9,
+      "n_clusters": 9,
+      "distinct_gt_values": 8,
+      "absent_docs": 0,
+      "headline_eligible": false,
+      "constant_across_clusters": false
+    },
+    {
+      "path": "totals.otherCharges",
+      "n_docs": 6,
+      "n_clusters": 6,
+      "distinct_gt_values": 5,
+      "absent_docs": 0,
+      "headline_eligible": false,
+      "constant_across_clusters": false
+    },
+    {
+      "path": "totals.subtotal",
+      "n_docs": 52,
+      "n_clusters": 52,
+      "distinct_gt_values": 49,
+      "absent_docs": 0,
+      "headline_eligible": true,
+      "constant_across_clusters": false
+    },
+    {
+      "path": "totals.taxAmount",
+      "n_docs": 10,
+      "n_clusters": 10,
+      "distinct_gt_values": 5,
+      "absent_docs": 0,
+      "headline_eligible": false,
+      "constant_across_clusters": false
+    },
+    {
+      "path": "totals.totalIncludingTax",
+      "n_docs": 89,
+      "n_clusters": 89,
+      "distinct_gt_values": 85,
+      "absent_docs": 0,
+      "headline_eligible": true,
+      "constant_across_clusters": false
+    }
+  ]
+}

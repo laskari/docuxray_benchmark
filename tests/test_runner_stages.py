@@ -75,7 +75,9 @@ def _cfg():
 @pytest.fixture
 def runner(tmp_path, monkeypatch):
     monkeypatch.setattr(R, "_ROOT", tmp_path)          # keep runs/ out of the repo
-    return R.Runner(_cfg(), ["A"], "t")
+    # extraction_postprocessing is production code from ai_backend; stub it everywhere.
+    monkeypatch.setattr(R.Runner, "_extraction_postprocessing", lambda self, raw: raw)
+    return R.Runner(_cfg(), ["RAW"], "t")
 
 
 @pytest.fixture
@@ -92,21 +94,29 @@ def test_extraction_is_on_disk_before_anything_else_runs(runner, image, monkeypa
     r = runner.run_document("Template1_Instance1", str(image))
 
     d = runner.stages_dir / "Template1_Instance1"
-    assert r.ok and r.stage_status == {"extract": "ok"}
+    assert r.ok
+    assert r.stage_status == {"extract": "ok", "extraction_postprocessing": "ok"}
     body = json.loads((d / "01_extract_raw.json").read_text())
-    assert body["arm"] == "A" and body["data"] == {"invoice": {"total": "10"}}
+    # bare extraction is an intermediate now: kept on disk, but it is not an arm
+    assert body["arm"] is None and body["data"] == {"invoice": {"total": "10"}}
     assert body["model"] == "test-extract"
+
+    raw_arm = json.loads((d / "02_extraction_postprocessing.json").read_text())
+    assert raw_arm["arm"] == "RAW"
+    assert r.arms == {"RAW": {"invoice": {"total": "10"}}}
 
     status = json.loads((d / "00_status.json").read_text())
     assert status["finished"] and status["ok"] and not status["timed_out"]
-    assert status["files"] == {"extract": "01_extract_raw.json"}
+    assert status["files"] == {"extract": "01_extract_raw.json",
+                               "extraction_postprocessing":
+                                   "02_extraction_postprocessing.json"}
 
 
 def test_a_stalled_stage_keeps_the_stages_that_already_finished(tmp_path, monkeypatch, image):
     """The point of the whole change. Extraction is paid for; a judge that never returns must
     not take it down with it."""
     monkeypatch.setattr(R, "_ROOT", tmp_path)
-    runner = R.Runner(_cfg(), ["A", "B"], "t")
+    runner = R.Runner(_cfg(), ["RAW", "FINAL"], "t")
     monkeypatch.setattr(R.Runner, "_extract",
                         lambda self, r, img, doc: ({"invoice": {"total": "10"}}, {"input": 7}))
     release = threading.Event()
@@ -141,7 +151,8 @@ def test_stage_file_names_are_stable():
 def test_one_stalled_document_does_not_stall_the_run(tmp_path, monkeypatch):
     """Three of ten documents hung and took the other seven's run with them. Not any more."""
     monkeypatch.setattr(R, "_ROOT", tmp_path)
-    runner = R.Runner(_cfg(), ["A"], "t")
+    monkeypatch.setattr(R.Runner, "_extraction_postprocessing", lambda self, raw: raw)
+    runner = R.Runner(_cfg(), ["RAW"], "t")
 
     images = {}
     for i in range(5):
@@ -178,13 +189,28 @@ def test_one_stalled_document_does_not_stall_the_run(tmp_path, monkeypatch):
 
 def test_per_doc_budget_covers_the_stages_it_bounds(tmp_path, monkeypatch):
     monkeypatch.setattr(R, "_ROOT", tmp_path)
-    assert R.Runner(_cfg(), ["A"], "t").per_doc_budget() == pytest.approx(0.4 + 3 * 0.4)
-    assert R.Runner(_cfg(), ["A", "B", "C", "D"], "t").per_doc_budget() == \
+    assert R.Runner(_cfg(), ["RAW"], "t").per_doc_budget() == pytest.approx(0.4 + 3 * 0.4)
+    assert R.Runner(_cfg(), ["RAW", "FINAL"], "t").per_doc_budget() == \
         pytest.approx(0.4 + 0.4 + 3 * 0.4)
+
+
+def test_old_arm_names_are_rejected_with_a_migration_hint(tmp_path, monkeypatch):
+    """A/B/C/D silently scoring as unknown arms would produce an empty report, not an error."""
+    monkeypatch.setattr(R, "_ROOT", tmp_path)
+    with pytest.raises(ValueError) as e:
+        R.Runner(_cfg(), ["A", "B", "C", "D"], "t")
+    assert "B -> RAW" in str(e.value) and "D -> FINAL" in str(e.value)
+    with pytest.raises(ValueError):
+        R.Runner(_cfg(), [], "t")
+
+
+def test_arm_names_are_normalised(tmp_path, monkeypatch):
+    monkeypatch.setattr(R, "_ROOT", tmp_path)
+    assert R.Runner(_cfg(), [" raw ", "final"], "t").arms == ["RAW", "FINAL"]
 
 
 def test_cli_timeout_overrides_config(tmp_path, monkeypatch):
     monkeypatch.setattr(R, "_ROOT", tmp_path)
-    r = R.Runner(_cfg(), ["A"], "t", stage_timeouts={"judge": 900, "extract": None})
+    r = R.Runner(_cfg(), ["RAW"], "t", stage_timeouts={"judge": 900, "extract": None})
     assert r.stage_timeouts["judge"] == 900
     assert r.stage_timeouts["extract"] == 0.4      # None must not clobber the config value

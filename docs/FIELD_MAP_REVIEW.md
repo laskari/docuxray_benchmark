@@ -41,7 +41,7 @@ not opinion:
   both imply prior-balance semantics FATURA never expresses.
 - **`DISCOUNT` sign** → GT stored as **positive magnitude**. Reason:
   `invoice_postprocessor._normalize_totals` converts a negative `discountTotal` to its absolute
-  value. Storing GT as `-13.42` would make arm B score worse than arm A on every discounted
+  value. Storing GT as `-13.42` would make the postprocessed arm score worse than bare extraction on every discounted
   invoice as a pure sign artifact. Discount amount == subtotal × pct in **1800/1800** files, so
   both the percentage and the amount are internally consistent and safe to score.
 - **`CONDITIONS`** → unmapped. Every value is the same truncated boilerplate
@@ -194,7 +194,7 @@ would inflate the currency number on nearly a third of the corpus. Flag if you d
 undertake that `ai/extraction/extraction_prompts.py` and `ai/judge/core/judge_prompts.py` do not
 change until the pilot is scored? A prompt change mid-run makes the numbers unusable.
 
-**Spend ceiling.** 1,099 documents (99 pilot + 1,000 main) × 4 extraction calls, plus sectional judge on arm C. Give me a
+**Spend ceiling.** 1,099 documents (99 pilot + 1,000 main) × 4 extraction calls, plus the sectional judge. Give me a
 figure and I will size concurrency and abort thresholds to it.
 
 ---

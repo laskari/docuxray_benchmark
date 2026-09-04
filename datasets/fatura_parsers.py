@@ -124,8 +124,8 @@ def money_abs(raw, *, key: str = "", **_) -> Optional[str]:
 
     GT discount is stored as a positive magnitude because
     ai/postprocessing/invoice_postprocessor.py::_normalize_totals converts a negative
-    discountTotal to its absolute value. Storing GT negative would make arm B score worse than
-    arm A on every discounted invoice as a pure sign artifact. See fatura_field_map.yaml.
+    discountTotal to its absolute value. Storing GT negative would make the postprocessed
+    arm score worse than bare extraction on every discounted invoice as a pure sign artifact. See fatura_field_map.yaml.
     """
     value = normalise_money(raw, which="last")
     return money_to_str(abs(value)) if value is not None else None

@@ -154,10 +154,10 @@ def numeric_from_field(value, *, prefer: str = None) -> tuple:
 
     The wire shape differs by pipeline stage:
 
-      arm A (raw extraction)    {"originalValue": "1,234.56"}
+      bare extraction           {"originalValue": "1,234.56"}
                                 new_schema.NumericValue declares ONLY originalValue and sets
                                 extra="forbid" -- the model cannot emit anything else.
-      arm B / C (postprocessed) {"originalValue": "1,234.56", "normalizedValue": 1234.56}
+      RAW / FINAL               {"originalValue": "1,234.56", "normalizedValue": 1234.56}
                                 added by ai/postprocessing/_common.py.
 
     Reads `prefer` (default NUMERIC_SOURCE), falling back to the other key when the preferred

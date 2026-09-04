@@ -1,0 +1,28 @@
+{
+  "dataset": "docile100",
+  "doc_type": "invoice",
+  "n_docs": 10,
+  "n_templates": 10,
+  "n_gt_rows": 67,
+  "purpose": "verification gate and the hand-adjudication set \u2014 not a measurement",
+  "selection": "one document per distinct key-set, then filled by line-item table size (none / single / small / medium / large) so the pilot cannot consist of ten easy single-row tables",
+  "strata": {
+    "large": 10,
+    "single": 37,
+    "small": 31,
+    "none": 3,
+    "medium": 19
+  },
+  "doc_ids": [
+    "01c6345280824ef681cf7b38_0",
+    "01e49b6f7b0e4edf91f42c0f_0",
+    "022d1406c0f04ee4806547fa_0",
+    "026b40228369449785a2cbc5_0",
+    "028e0857a139450a8c4e5ba3_0",
+    "02f04b622635431a9f1877c4_0",
+    "035fb5c9709e4d928a2e2088_0",
+    "039b024e54fe41e8ad8717e8_0",
+    "039f9c90c89b424daa806cd0_0",
+    "040a088f9c724696b0296618_0"
+  ]
+}

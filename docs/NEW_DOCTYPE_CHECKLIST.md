@@ -70,7 +70,7 @@ python steps/step1_key_mapping.py --doc-type receipt --check
 python steps/step2_ground_truth.py --doc-type receipt
 python steps/step3_environment.py
 python steps/step4_sampling.py --doc-type receipt --describe
-python steps/step5_run.py --plan gt/receipt/smoke_*.json --arms A,B,C --limit 10 --run-id r-probe
+python steps/step5_run.py --plan gt/receipt/smoke_*.json --arms RAW,FINAL --limit 10 --run-id r-probe
 python scripts/recost.py runs/r-probe
 python steps/step6_compare.py runs/r-probe
 python steps/step7_metrics.py runs/r-probe
@@ -90,7 +90,7 @@ exclusion counts matching the register — are the ones that caught real bugs.
 | What is a cluster? | CORD has no templates; the wrong choice makes intervals too narrow |
 | Is absence authoritative? | Decides whether you get a hallucination denominator at all |
 | Which fields are barred from headlines? | Run the eligibility test before, not after, seeing the scores |
-| Does the receipt postprocessor differ from the invoice one? | Arm B is `get_postprocessor("receipt")` — verify it, do not assume |
+| Does the receipt postprocessor differ from the invoice one? | The FINAL arm calls `get_postprocessor("receipt")` — verify it, do not assume |
 
 ## What NOT to do
 

@@ -19,6 +19,28 @@ FastAPI, no RQ, no Redis, no MongoDB, no S3.
 
 Steps 1, 2 and 4 cost nothing. Step 5 is the only one that spends money.
 
+## The two arms
+
+Every scored comparison is between ground truth and one of two states — chosen because each is
+a record production itself persists, not a stage boundary invented by the harness:
+
+| arm | = | in production |
+|---|---|---|
+| **RAW** | extraction + `extraction_postprocessing` | `pages.$.extraction_postprocessing_result` — **what the judge is fed** (`judge_worker.py:88`) |
+| **FINAL** | RAW + judge + refinement + postprocessing | `pages.$.postprocessing_result` — **what the customer receives** |
+
+One pass produces both: 4 extraction calls + 5 judge sections per document.
+
+`RAW → FINAL` answers *"does everything after extraction help, end to end?"* — it does **not**
+attribute a change to the judge alone, because refinement and the type postprocessor sit in the
+same gap. The judge's detector matrix (`07_METRICS.md`) is judge-specific; `fields_fixed` and
+`fields_harmed` are not.
+
+The two intermediate states — bare extraction, and refined-before-postprocessing — are written
+to `runs/<id>/stages/` but are not scored. Nothing is lost: extraction and the judge report are
+cached and the remaining stages are deterministic, so `scripts/derive_arms.py` folds either one
+back in as an extra scored arm at zero cost.
+
 ## Layout
 
 ```
@@ -27,7 +49,7 @@ core/        doc-type agnostic. Nothing here knows what an invoice is.
   matching.py       type-driven match rules
   canonical.py      BenchmarkRecord — the one interchange type
   schema_paths.py   generates scoreable paths from the production Pydantic models
-  runner.py         arms A/B/C, response cache, spend cap, manifest
+  runner.py         arms RAW/FINAL, response cache, spend cap, manifest, per-stage files
   metrics.py        three-state nulls, cluster bootstrap, judge confusion matrix
   review_export.py  the Excel comparison sheet
 

@@ -17,7 +17,8 @@ sys.path.insert(0, str(_ROOT))
 from core.canonical import read_jsonl                                          # noqa: E402
 from core.matching import load_rule_registry, compare                        # noqa: E402
 from core.metrics import flatten_prediction, unwrap, predicted_value         # noqa: E402
-import doctypes                                                              # noqa: E402
+import doctypes
+from registry import gt_dir as _gt_dir, REGISTRY                                                  # noqa: E402
 from core.normalize import _Absent                                             # noqa: E402
 
 from openpyxl import Workbook
@@ -66,13 +67,16 @@ def main() -> int:
     ap = argparse.ArgumentParser()
     ap.add_argument("run_dir")
     ap.add_argument("-o", "--out", default=None)
+    ap.add_argument("--dataset", default=None, choices=sorted(REGISTRY),
+                    help="which ground truth to compare against; needed only when the\n"
+                         "run's manifest does not record one — same flag as step7")
     a = ap.parse_args()
     run = pathlib.Path(a.run_dir)
     out = pathlib.Path(a.out) if a.out else run / f"review_{run.name}.xlsx"
 
     manifest = json.loads((run / "manifest.json").read_text())
     spec = doctypes.get(manifest.get("doc_type", "invoice"))
-    gt_dir = _ROOT / "gt" / spec.name
+    gt_dir = _gt_dir(spec.name, a.dataset or manifest.get("dataset"))
     gt = {r.doc_id: r for r in read_jsonl(str(gt_dir / "ground_truth.jsonl"))}
     rules = load_rule_registry(str(_ROOT / "schema" / f"{spec.name}_leaf_paths.tsv"), spec)
     cov = {c["path"]: c for c in json.loads((gt_dir / "coverage.json").read_text())["paths"]}
@@ -95,7 +99,7 @@ def main() -> int:
             truth = rec.gt.get(path)
             gt_absent = isinstance(truth, _Absent)
             cells, verdicts = {}, {}
-            for arm in ("A", "B", "C"):
+            for arm in ("RAW", "FINAL"):
                 pred = predicted_value(path, flats[arm], spec) if arm in flats else None
                 cells[arm] = pred
                 if arm not in flats:
@@ -106,8 +110,9 @@ def main() -> int:
                 else:
                     verdicts[arm] = "match" if compare(pred, truth, rule).matched else "MISMATCH"
             delta = ""
-            if verdicts.get("B") and verdicts.get("C"):
-                okb, okc = verdicts["B"] in ("match", "correct-null"), verdicts["C"] in ("match", "correct-null")
+            if verdicts.get("RAW") and verdicts.get("FINAL"):
+                okb = verdicts["RAW"] in ("match", "correct-null")
+                okc = verdicts["FINAL"] in ("match", "correct-null")
                 delta = "FIXED" if (not okb and okc) else ("HARMED" if (okb and not okc) else "")
             issue = judge_lookup(d.get("judge"), path)
             rows.append({
@@ -115,8 +120,8 @@ def main() -> int:
                 "rule": rule.value,
                 "headline": "yes" if cov.get(path, {}).get("headline_eligible") else "no",
                 "gt": render(truth),
-                "A": render(cells["A"]), "B": render(cells["B"]), "C": render(cells["C"]),
-                "vA": verdicts["A"], "vB": verdicts["B"], "vC": verdicts["C"],
+                "raw": render(cells["RAW"]), "final": render(cells["FINAL"]),
+                "v_raw": verdicts["RAW"], "v_final": verdicts["FINAL"],
                 "delta": delta,
                 "judge_flag": "yes" if issue else "",
                 "judge_type": (issue or {}).get("issue_type", ""),
@@ -138,9 +143,9 @@ def main() -> int:
 
 
 HEADERS = ["doc_id", "template", "field", "rule", "headline",
-           "GROUND TRUTH", "A · raw extraction", "B · postprocessed", "C · refined (judge)",
-           "A?", "B?", "C?", "B→C", "judge flagged", "judge issue", "judge corrected value",
-           "ADJUDICATION", "NOTES"]
+           "GROUND TRUTH", "RAW · judge input", "FINAL · shipped output",
+           "RAW?", "FINAL?", "RAW→FINAL", "judge flagged", "judge issue",
+           "judge corrected value", "ADJUDICATION", "NOTES"]
 
 
 def _fields_sheet(wb, rows, manifest):
@@ -152,28 +157,27 @@ def _fields_sheet(wb, rows, manifest):
     ws.row_dimensions[1].height = 30
     for r in rows:
         ws.append([r["doc_id"], r["template"], r["field"], r["rule"], r["headline"],
-                   r["gt"], r["A"], r["B"], r["C"],
-                   r["vA"], r["vB"], r["vC"], r["delta"],
+                   r["gt"], r["raw"], r["final"], r["v_raw"], r["v_final"], r["delta"],
                    r["judge_flag"], r["judge_type"], r["judge_corrected"], "", ""])
     for row in ws.iter_rows(min_row=2):
         for c in row:
             c.font = BODY
-        for i in (2, 5, 6, 7, 8, 15):
+        for i in (2, 5, 6, 7, 13):
             row[i].font = MONO
-        for i, key in ((9, "vA"), (10, "vB"), (11, "vC")):
+        for i in (8, 9):
             if row[i].value in ("MISMATCH", "HALLUCINATION"):
                 row[i].fill = BAD
                 row[i].font = Font(name=FONT, size=10, bold=True, color="C00000")
-        if row[12].value == "FIXED":
-            row[12].fill = GOOD; row[12].font = Font(name=FONT, size=10, bold=True, color="375623")
-        elif row[12].value == "HARMED":
-            row[12].fill = HARM; row[12].font = Font(name=FONT, size=10, bold=True, color="C00000")
-        row[16].fill = INPUT; row[17].fill = INPUT
-    widths = [22, 12, 40, 14, 9, 34, 34, 34, 34, 8, 8, 8, 8, 9, 22, 26, 20, 34]
+        if row[10].value == "FIXED":
+            row[10].fill = GOOD; row[10].font = Font(name=FONT, size=10, bold=True, color="375623")
+        elif row[10].value == "HARMED":
+            row[10].fill = HARM; row[10].font = Font(name=FONT, size=10, bold=True, color="C00000")
+        row[14].fill = INPUT; row[15].fill = INPUT
+    widths = [22, 12, 40, 14, 9, 36, 36, 36, 9, 9, 11, 9, 22, 26, 20, 34]
     for i, w in enumerate(widths, start=1):
         ws.column_dimensions[get_column_letter(i)].width = w
     ws.freeze_panes = "F2"
-    ws.auto_filter.ref = f"A1:R{ws.max_row}"
+    ws.auto_filter.ref = f"A1:P{ws.max_row}"
     dv = DataValidation(type="list", allow_blank=True, showDropDown=False,
                         formula1='"model_error,gt_error,normalisation_error,mapping_error,not_an_error"')
     ws.add_data_validation(dv); dv.add(f"Q2:Q{ws.max_row}")
@@ -239,7 +243,7 @@ def _by_field(wb, rows, formulas):
             ca, cb, cc = (sum(1 for r in sub if r[k] == "match") for k in ("vA", "vB", "vC"))
             ws.append([fld, sub[0]["rule"], sub[0]["headline"], t, ca, cb, cc,
                        ca / t if t else "", cb / t if t else "", cc / t if t else "",
-                       sum(1 for r in sub if r["vC"] == "HALLUCINATION")])
+                       sum(1 for r in sub if r["v_final"] == "HALLUCINATION")])
     _finish(ws, [42, 14, 9, 7, 10, 10, 10, 9, 9, 9, 17], pct_cols="HIJ", mono_first=True)
 
 

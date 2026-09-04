@@ -43,7 +43,7 @@ across both. No single target is right. That is what `DocTypeSpec.merged_targets
 
 **3. The schema describes what the MODEL may emit, not what the PIPELINE produces.**
 `NumericValue` declares only `originalValue`; the postprocessor adds `normalizedValue`
-afterwards. Pinning the scorer to a stage-added field would have scored arm A as zero on every
+afterwards. Pinning the scorer to a stage-added field would have scored bare extraction as zero on every
 amount. Diff a real raw output against a real refined output and enumerate every key that only
 appears in the latter.
 
