@@ -146,19 +146,43 @@ def test_numeric_from_field_arm_a_shape():
     assert source == "originalValue"
 
 
-def test_numeric_from_field_prefers_original_by_default():
-    # originalValue is the default source: it is present at every stage and the postprocessor
-    # only strips it, so all three arms are scored on the identical field.
+def test_numeric_from_field_prefers_normalized_by_default():
+    # normalizedValue is the default source (changed 2026-09-04). It is production's own parse
+    # of the printed string, and it is the only key that survives the postprocessor's sign
+    # rewrite on discountTotal.
     value, source = numeric_from_field({"originalValue": "1,234.56", "normalizedValue": 1234.56})
+    assert money_to_str(value) == "1234.56"
+    assert source == "normalizedValue"
+
+
+def test_numeric_from_field_can_prefer_original_when_asked():
+    value, source = numeric_from_field({"originalValue": "1,234.56", "normalizedValue": 1234.56},
+                                       prefer="originalValue")
     assert money_to_str(value) == "1234.56"
     assert source == "originalValue"
 
 
-def test_numeric_from_field_can_prefer_normalized_when_asked():
-    value, source = numeric_from_field({"originalValue": "1,234.56", "normalizedValue": 1234.56},
-                                       prefer="normalizedValue")
-    assert money_to_str(value) == "1234.56"
+def test_discount_sign_rewrite_is_read_correctly():
+    """THE regression this change exists for.
+
+    ai/postprocessing/invoice_postprocessor.py rewrites discountTotal's originalValue from
+    "9.93" to "(-) 9.93" while setting normalizedValue to 9.93. FATURA's ground truth stores
+    discount as a positive magnitude, so reading originalValue scored FINAL 0/13 on a field
+    RAW scored 12/13 -- a fabricated 100% regression. Measured on the 51-document probe,
+    this is the ONLY path where the two keys disagree.
+    """
+    final = {"originalValue": "(-) 9.93", "normalizedValue": 9.93}
+    value, source = numeric_from_field(final)
+    assert money_to_str(value) == "9.93", "the sign rewrite leaked back in"
     assert source == "normalizedValue"
+
+
+def test_raw_arm_still_reads_when_normalized_does_not_exist():
+    """The old objection to normalizedValue was that RAW would score zero. It does not:
+    the model emits only originalValue there, and the fallback picks it up."""
+    value, source = numeric_from_field({"originalValue": "1,234.56"})
+    assert money_to_str(value) == "1234.56"
+    assert source == "originalValue"
 
 
 def test_numeric_falls_back_when_original_is_unparseable():
@@ -175,24 +199,45 @@ def test_numeric_parse_disagreement_is_flagged_not_resolved():
     assert not numeric_parse_disagreement({"originalValue": "1234.00"})
 
 
-def test_numeric_reads_original_when_normalized_is_none():
-    # The postprocessor sets normalizedValue=None when it cannot parse originalValue and raises
-    # a number_unparseable warning. The printed string is still the best evidence we have.
+def test_a_present_but_null_normalized_is_the_answer_not_a_gap():
+    """Changed 2026-09-04, and it is the most consequential rule in this module.
+
+    A normalizedValue that EXISTS and holds null is production saying "I computed a value and
+    rejected it" -- and null is what the customer receives. Rescuing the field from
+    originalValue credits the model for something nobody ever sees. On the 51-document probe
+    that scored totals.taxPercentage at 100% in FINAL while 16 documents shipped null:
+    refinement rewrites the field to "(4.65%)", _normalize_numeric_value reads the parentheses
+    as negation, -4.65 fails the [0,100] check, and the field is nulled.
+    """
     value, source = numeric_from_field({"originalValue": "725.30 EUR", "normalizedValue": None})
+    assert value is None, "a shipped null must not be rescued from originalValue"
+    assert source == "normalizedValue", "source names the key that decided the outcome"
+
+
+def test_a_missing_key_still_falls_back():
+    """The other half of the rule, and why the RAW arm is not zeroed: the model cannot emit
+    normalizedValue at all (new_schema.NumericValue sets extra='forbid'), so an ABSENT key
+    means the stage has decided nothing and the other key is read."""
+    value, source = numeric_from_field({"originalValue": "725.30 EUR"})
     assert money_to_str(value) == "725.30"
     assert source == "originalValue"
 
 
 def test_numeric_from_field_null_wrapper():
-    assert numeric_from_field({"originalValue": None, "normalizedValue": None}) == (None, None)
+    # Both keys present and null: still no value; the preferred key names the decision.
+    assert numeric_from_field({"originalValue": None, "normalizedValue": None}) \
+        == (None, "normalizedValue")
     assert numeric_from_field(None) == (None, None)
     assert numeric_from_field(ABSENT) == (None, None)
 
 
 def test_numeric_rejects_bool_as_normalized():
-    # True is an int in Python; it must not be read as the number 1.
+    # True is an int in Python; it must never read as the number 1. A non-numeric
+    # normalizedValue is malformed rather than a decision, so the fallback still applies --
+    # and here originalValue is itself null, so the answer is still no value.
     value, source = numeric_from_field({"originalValue": None, "normalizedValue": True})
-    assert value is None and source is None
+    assert value is None
+    assert source == "originalValue"
 
 
 def test_numeric_from_field_accepts_bare_scalars():
@@ -200,15 +245,20 @@ def test_numeric_from_field_accepts_bare_scalars():
     assert money_to_str(numeric_from_field("725.30 EUR")[0]) == "725.30"
 
 
-def test_arm_a_and_arm_b_shapes_compare_equal():
+def test_both_arm_shapes_compare_equal():
+    """The two arms carry different wire shapes and must still score the same fact.
+
+    They are read from DIFFERENT keys -- RAW has no normalizedValue -- so value_source is
+    published per row precisely so an arm difference can be checked against which key was
+    used, rather than assumed to be a model difference.
+    """
     from core.matching import compare, MatchRule
-    arm_a = {"originalValue": "1,234.56"}
-    arm_b = {"originalValue": "1,234.56", "normalizedValue": 1234.56}
-    assert compare(arm_a, "1234.56", MatchRule.NUMERIC).matched
-    assert compare(arm_b, "1234.56", MatchRule.NUMERIC).matched
-    # Both arms scored on the SAME field, so an arm difference is a real pipeline difference.
-    assert compare(arm_a, "1234.56", MatchRule.NUMERIC).value_source == "originalValue"
-    assert compare(arm_b, "1234.56", MatchRule.NUMERIC).value_source == "originalValue"
+    raw = {"originalValue": "1,234.56"}
+    final = {"originalValue": "1,234.56", "normalizedValue": 1234.56}
+    assert compare(raw, "1234.56", MatchRule.NUMERIC).matched
+    assert compare(final, "1234.56", MatchRule.NUMERIC).matched
+    assert compare(raw, "1234.56", MatchRule.NUMERIC).value_source == "originalValue"
+    assert compare(final, "1234.56", MatchRule.NUMERIC).value_source == "normalizedValue"
 
 
 # --------------------------------------------------------------------------------------
@@ -225,13 +275,13 @@ def test_merge_joins_components_in_order():
     got = merge_address_components({
         "address": "16424 Timothy Mission", "city": "Markville",
         "state": "AK", "postal_code": "58294", "country": "US"})
-    assert got == "16424 timothy mission, markville, ak, 58294, us"
+    assert got == "16424 timothy mission markville ak 58294 us"
 
 
 def test_merge_skips_nulls_and_blanks():
     got = merge_address_components({"address": "1 A St", "city": None,
                                     "state": "  ", "postal_code": "90001", "country": None})
-    assert got == "1 a st, 90001"
+    assert got == "1 a st 90001"
     assert merge_address_components({"address": None, "city": None}) is None
     assert merge_address_components(None) is None
 
@@ -271,49 +321,48 @@ def test_missing_postcode_degrades_but_may_still_pass_anls():
     assert not r.exact and 0.8 <= r.score < 1.0, r
 
 
+
+
 # --------------------------------------------------------------------------------------
-# NOTE -- merged-source containment
+# is_emitted -- structural presence is not an emission
 # --------------------------------------------------------------------------------------
 
-def test_note_merges_paymentterms_and_memo():
-    from core.matching import compare, MatchRule, merge_prediction_sources
-    P = "invoiceInfo.noteText"
-
-    # routed entirely to customerMemo
-    m = merge_prediction_sources(P, {"invoiceInfo.customerMemo": "This order is shipped through blue dart courier"})
-    assert compare(m, "This order is shipped through blue dart courier", MatchRule.TEXT_CONTAINED).matched
-
-    # SPLIT across both fields -- the case neither single target handles
-    m = merge_prediction_sources(P, {"invoiceInfo.paymentTerms.raw_text": "All payments to be made in cash.",
-                                     "invoiceInfo.customerMemo": "Contact us for queries on these quotations."})
-    assert compare(m, "All payments to be made in cash. Contact us for queries on these quotations.",
-                   MatchRule.TEXT_CONTAINED).matched
+from core.normalize import is_emitted  # noqa: E402
 
 
-def test_note_tolerates_extra_content_from_conditions():
-    """Template11: NOTE -> paymentTerms, CONDITIONS -> customerMemo. The merge carries text the
-    GT NOTE does not, and that must NOT be scored as a miss."""
-    from core.matching import compare, MatchRule, merge_prediction_sources
-    m = merge_prediction_sources("invoiceInfo.noteText", {
-        "invoiceInfo.paymentTerms.raw_text": "Total payment due in 14 days.",
-        "invoiceInfo.customerMemo": "will be charged if payment is not made within the due date."})
-    r = compare(m, "Total payment due in 14 days.", MatchRule.TEXT_CONTAINED)
-    assert r.matched and r.score == 1.0 and not r.exact
+def test_empty_shells_are_not_emissions():
+    """The extraction schema is a fixed Pydantic tree, so a field the model declined to answer
+    comes back as the SHAPE of an answer with nothing in it. Against a GT that says ABSENT
+    those are correct nulls, not hallucinations.
+
+    The predicate this replaced tested `str(pred).strip() != ""`, and `str({})` is "{}" --
+    non-empty -- so on the 51-document probe 9 correctly-empty seller addresses scored as
+    9 hallucinations in BOTH arms.
+    """
+    assert not is_emitted(None)
+    assert not is_emitted("")
+    assert not is_emitted("   ")
+    assert not is_emitted({})
+    assert not is_emitted([])
+    assert not is_emitted(ABSENT)
+    assert not is_emitted({"originalValue": None})
+    assert not is_emitted({"originalValue": None, "normalizedValue": None})
+    assert not is_emitted({"address": None, "city": None, "state": None,
+                           "postal_code": None, "country": None})
+    assert not is_emitted({"a": {"b": None}}), "must recurse, not just check the top level"
 
 
-def test_note_still_fails_when_the_model_missed_it_or_got_it_wrong():
-    from core.matching import compare, MatchRule, merge_prediction_sources
-    P = "invoiceInfo.noteText"
-    assert not compare(merge_prediction_sources(P, {}), "Thank you for your business!",
-                       MatchRule.TEXT_CONTAINED).matched
-    assert not compare(merge_prediction_sources(P, {"invoiceInfo.customerMemo": "Unrelated sentence"}),
-                       "Thank you for your business!", MatchRule.TEXT_CONTAINED).matched
+def test_real_values_are_emissions():
+    assert is_emitted("Acme Ltd")
+    assert is_emitted({"originalValue": "9.93"})
+    assert is_emitted({"address": None, "city": "Markville"})
+    assert is_emitted({"a": {"b": "v"}})
 
 
-def test_note_component_paths_are_consumed_not_scored():
-    from core.matching import load_rule_registry, consumed_paths
-    reg = load_rule_registry("schema/invoice_leaf_paths.tsv")
-    assert reg["invoiceInfo.noteText"].value == "text_contained"
-    assert "invoiceInfo.customerMemo" not in reg
-    assert "invoiceInfo.paymentTerms.raw_text" not in reg
-    assert "invoiceInfo.customerMemo" in consumed_paths("schema/invoice_leaf_paths.tsv")
+def test_zero_and_false_are_emissions():
+    """A real zero is an answer. Folding it into 'absent' would silently forgive a model that
+    emits 0.00 for a total it could not read."""
+    assert is_emitted(0)
+    assert is_emitted(0.0)
+    assert is_emitted(False)
+    assert is_emitted({"originalValue": "0.00", "normalizedValue": 0.0})

@@ -41,6 +41,34 @@ class _Absent:
 ABSENT = _Absent()
 
 
+def is_emitted(value) -> bool:
+    """Did the model actually SAY something here, or is this an empty shell?
+
+    Structural presence is not an emission. The extraction schema is a fixed Pydantic tree, so
+    a field the model declined to answer comes back as the *shape* of an answer with nothing in
+    it -- `{}`, `{"originalValue": null}`, or an addressStructured whose five components are
+    all null. Those mean exactly what a bare JSON `null` means, and against a ground truth that
+    says ABSENT they are a correct null, not a hallucination.
+
+    The predicate this replaced (`pred is not None and str(pred).strip() != ""`) tested the
+    Python repr, and `str({})` is `"{}"` -- two characters, non-empty -- so every all-null
+    object scored as an emission. On the 51-document probe that turned 9 correctly-empty
+    seller addresses into 9 hallucinations, in both arms.
+
+    A real zero, an empty-but-present string inside an object, and False all count as emitted;
+    only "nothing, all the way down" does not.
+    """
+    if value is None or isinstance(value, _Absent):
+        return False
+    if isinstance(value, str):
+        return bool(value.strip())
+    if isinstance(value, dict):
+        return any(is_emitted(v) for v in value.values())
+    if isinstance(value, (list, tuple, set)):
+        return any(is_emitted(v) for v in value)
+    return True                       # numbers (0 included), Decimals, bools, dates
+
+
 class ParseError(ValueError):
     """Raised by a strict parser when input does not match its expected shape."""
 
@@ -146,7 +174,37 @@ def money_to_str(value: Optional[Decimal]) -> Optional[str]:
 # that production's parser (which resolves '1.234' style separator ambiguity with a documented
 # rule) is doing work this module's parser cannot. FATURA is not such a dataset: its amounts
 # are uniformly '1,098.21 USD' -- comma thousands, dot decimal, no ambiguity.
-NUMERIC_SOURCE = "originalValue"
+# Which key of a NumericValue carries the fact we score. numeric_from_field() falls back to
+# the other key when the preferred one is missing or null, which is what makes this safe in
+# the RAW arm, where the model emits only originalValue and normalizedValue does not exist.
+#
+# Changed 2026-09-04 from "originalValue". The reason the original decision gave -- "the
+# postprocessor only .strip()s originalValue, so both arms are scored on the IDENTICAL field"
+# -- turned out to be false. On totals.discountTotal the invoice postprocessor REWRITES
+# originalValue from "9.93" to "(-) 9.93" while setting normalizedValue to 9.93. The ground
+# truth stores discount as a positive magnitude, so reading originalValue scored FINAL at
+# 0/13 on a field RAW scored 12/13 -- a 100% regression that was entirely an artifact of
+# reading the wrong key. Measured across the 51-document probe, discountTotal in FINAL is the
+# ONLY path where the two keys disagree; everywhere else this change is a no-op.
+NUMERIC_SOURCE = "normalizedValue"
+
+
+def set_numeric_source(name: str) -> None:
+    """Choose which key of a NumericValue the scorer reads.
+
+    Set from config.yaml `scoring.numeric_source` via metrics.scoring_policy(), so the choice
+    lands in results.json beside the numbers it produced. It used to be a module constant that
+    silently decided every numeric verdict and appeared in no report.
+
+      "normalizedValue"  the parsed amount -- the question "is the VALUE right?"
+      "originalValue"    the printed string -- the question "is the TRANSCRIPTION right?"
+                         and the only source compatible with a verbatim ground truth
+    """
+    global NUMERIC_SOURCE
+    if name not in ("normalizedValue", "originalValue"):
+        raise ValueError(f"unknown numeric_source {name!r}; use 'normalizedValue' or "
+                         f"'originalValue'")
+    NUMERIC_SOURCE = name
 
 
 def numeric_from_field(value, *, prefer: str = None) -> tuple:
@@ -176,10 +234,20 @@ def numeric_from_field(value, *, prefer: str = None) -> tuple:
                  else ("normalizedValue", "originalValue"))
         for key in order:
             if key not in value:
+                # The stage does not emit this key AT ALL -- the RAW arm has no
+                # normalizedValue, because the model cannot emit one (extra="forbid").
+                # Fall through to the other key; nothing has been decided here.
                 continue
             raw = value[key]
             if raw is None:
-                continue
+                # The key EXISTS and production put null in it. That is an ANSWER, not a gap,
+                # and it is the answer the customer receives -- so do not rescue it from the
+                # other key. Masking this scored totals.taxPercentage at 100% in FINAL on the
+                # 51-document probe while 16 of those documents actually shipped null, because
+                # _normalize_numeric_value reads refinement's "(4.65%)" as -4.65, fails the
+                # [0,100] check and nulls the field. Falling back to originalValue credited
+                # the model for a value nobody ever sees. Corrected 2026-09-04.
+                return None, key
             if key == "normalizedValue":
                 # True is an int in Python; it must never read as the number 1.
                 if isinstance(raw, bool) or not isinstance(raw, (int, float)):
@@ -321,19 +389,84 @@ def normalise_phone(text) -> Optional[str]:
     return ("+" if plus else "") + digits
 
 
+def normalise_phone_compare(text) -> Optional[str]:
+    """Normalise a phone for COMPARISON: remove whitespace, keep every other character.
+
+    Naveen 2026-09-09: "for any phone numbers only the white space should be collapsed, nothing
+    to be removed". The previous rule reduced both sides to digits with a leading '+'
+    (normalise_phone, still used by the strict-ladder scripts), which answered "did the model
+    read the right number?" while the ground truth -- stored as printed since map rule 1.2 --
+    supports the stricter and more useful question "did the model reproduce what is printed?".
+    Brackets, hyphens, dots and slashes are part of the printed number and are now compared.
+
+    Whitespace is removed rather than collapsed to a single space, because a space INSIDE a phone
+    number carries no information: '+ (127)320-2529' and '+(127)320-2529' are the same number,
+    and collapsing runs of whitespace would still have scored them apart.
+
+    Measured on s42_main2000, 1,840 phone instances per arm:
+        RAW    98.86% -> 98.64%     RAW_PP 98.86% -> 98.64%     FINAL 99.46% -> unchanged
+    Eight arm-rows change, all PASS -> FAIL, and every one is a real difference from the page:
+    '+385)112-2765' and '+477)997-7393' drop the opening bracket, '+382204-7062' drops both, and
+    '+9236726899' reformats the number as bare digits.
+    """
+    if text is None or isinstance(text, _Absent):
+        return None
+    s = unicodedata.normalize("NFKC", str(text))
+    return _WS_RE.sub("", s) or None
+
+
 def normalise_address(text) -> Optional[str]:
     """Flatten a multi-line address block to one comma-separated line, then normalise."""
     if text is None or isinstance(text, _Absent):
         return None
+    if isinstance(text, dict):
+        parts = []
+        for k in ADDRESS_COMPONENT_ORDER:
+            if text.get(k):
+                parts.append(str(text[k]))
+        text = ", ".join(parts)
     s = str(text).replace("\r\n", "\n").replace("\r", "\n")
     parts = [p.strip(" ,") for p in s.split("\n") if p.strip(" ,")]
-    return normalise_string(", ".join(parts))
+    return normalise_string(", ".join(parts), drop_punct=False)
+
+
+# Punctuation that an ADDRESS comparison may collapse, and nothing else (Naveen 2026-09-09).
+#
+# The previous rule dropped every non-word character ([^\w\s]). That was broader than its own
+# justification, which is only that a component merge cannot reproduce the SEPARATORS the printed
+# block uses. Everything else in an address carries meaning and is now preserved:
+#
+#     kept   -  /  #  &  (  )  '  :   e.g. "lot 1851-a & 1851-b", "no.53 55,57 & 59",
+#                                          "jalan kpb 6", "Apt #4", "12/3"
+#     dropped   ,  ;                  component and line separators
+#     dropped   .                      abbreviation and sentence marks, whose presence is a
+#                                      template rendering choice ("Apt." vs "Apt", a trailing
+#                                      "johor." on a SROIE block)
+#
+# Measured: verdict-identical on FATURA (s42_main2000, 3 address fields x 3 arms x 2,000
+# documents, 0 changes), because FATURA addresses contain no punctuation but ',' and '.'. It is
+# NOT cosmetic on every dataset -- 448 of the 625 SROIE ground-truth addresses contain a
+# character the old rule destroyed, where "1851-a" and "1851 a" scored as the same address.
+_ADDRESS_SEP_RE = re.compile(r"[,;.]")
+
+
+def normalise_address_compare(text) -> Optional[str]:
+    """Normalise an address for COMPARISON: collapse separators only, keep every other character.
+
+    Used by both sides of the ADDRESS rule, so the ground-truth block and the merged components
+    are prepared identically.
+    """
+    if text is None or isinstance(text, _Absent):
+        return None
+    s = unicodedata.normalize("NFKC", str(text))
+    s = _ADDRESS_SEP_RE.sub(" ", s)
+    return _WS_RE.sub(" ", s).strip().casefold() or None
 
 
 ADDRESS_COMPONENT_ORDER = ("address", "city", "state", "postal_code", "country")
+ADDRESS_COMPONENT_ORDER_ALT = ("address", "postal_code", "city", "state", "country")
 
-
-def merge_address_components(value) -> Optional[str]:
+def merge_address_components(value, alt_order=False) -> Optional[str]:
     """Collapse an addressStructured object into one comparable address string.
 
     Ground truth gives ONE multi-line block; the schema splits it across five components. Rather
@@ -341,6 +474,13 @@ def merge_address_components(value) -> Optional[str]:
     correctness -- we merge the model's components back into a single string and compare that
     against the whole block. A model that correctly routes the city into `city` is then neither
     rewarded nor punished for the split; only the address CONTENT is scored.
+
+    Components are joined with a SINGLE SPACE, not a comma (Naveen 2026-09-09). A comma join
+    inserted separators that the comparison then had to remove again; whitespace is the neutral
+    join. Note this does NOT make punctuation significant: the printed block itself carries a
+    comma between city and state ("Tammyland, SD 42587 US") which no component split can
+    reproduce, so `compare()` still drops punctuation on both sides. Measured on s42_main2000:
+    the space join is verdict-identical to the old comma join on all 3,840 comparisons.
 
     Accepts the object, a bare string, or None.
     """
@@ -350,15 +490,16 @@ def merge_address_components(value) -> Optional[str]:
         return normalise_address(value)
     if not isinstance(value, dict):
         return None
+    order = ADDRESS_COMPONENT_ORDER_ALT if alt_order else ADDRESS_COMPONENT_ORDER
     parts = []
-    for key in ADDRESS_COMPONENT_ORDER:
+    for key in order:
         piece = value.get(key)
         if piece is None:
             continue
         piece = str(piece).strip(" ,")
         if piece:
             parts.append(piece)
-    return normalise_address("\n".join(parts)) if parts else None
+    return normalise_string(" ".join(parts)) if parts else None
 
 
 # --------------------------------------------------------------------------------------

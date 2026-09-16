@@ -1,11 +1,29 @@
 """Run the frozen DocuXray pipeline over a benchmark plan.
 
-TWO arms, both of which exist as durable artifacts in production:
+THREE arms. Two are durable artifacts in production; one exists only so the comparison
+between them is fair:
 
-    RAW    extraction + extraction_postprocessing          == judge_worker's input
-                                                              (pages.$.extraction_postprocessing_result)
-    FINAL  RAW + judge + refinement + postprocessing        == the shipped output
-                                                              (pages.$.postprocessing_result)
+    RAW                extraction + extraction_postprocessing    == judge_worker's input
+                                                                  (pages.$.extraction_postprocessing_result)
+    RAW_POSTPROCESSED  RAW + the type postprocessor              == A SCORING CONSTRUCT.
+                                                                  Never fed to a model, never
+                                                                  shipped, no such document
+                                                                  exists in production.
+    FINAL              RAW + judge + refinement + postprocessing == the shipped output
+                                                                  (pages.$.postprocessing_result)
+
+WHY RAW_POSTPROCESSED EXISTS
+NumericValue declares only `originalValue` and sets extra="forbid", so the model cannot emit a
+normalised number: arm RAW is scored by parsing printed strings with the BENCHMARK's parser,
+arm FINAL by reading `normalizedValue` from the PRODUCT's parser. RAW -> FINAL was therefore
+never a clean before/after-judge comparison -- it was also core/normalize vs
+ai/postprocessing/_common. Measured on runs/main (969 docs): 65 of 125 "judge fixes" were
+that parser difference alone, all of them totals.discountTotal, where FATURA prints "(-) 9.39"
+and the postprocessor's negative-discount abs() rule -- not the judge -- produces 9.39. Net
+judge lift falls from +79 to +14 once the baseline is RAW_POSTPROCESSED.
+
+It is built by running the SAME postprocessor on RAW that arm FINAL runs on refined data, so
+both sides of the judge comparison pass through one parser. It costs nothing: no model call.
 
 Verified against the worker enqueue chain, not assumed from module names:
 
@@ -72,7 +90,7 @@ sys.path.insert(0, str(_ROOT))
 from config import load, load_env                      # noqa: E402
 from core.canonical import read_jsonl                       # noqa: E402
 import doctypes
-from registry import dataset_for, gt_dir as _gt_dir                                            # noqa: E402
+from registry import REGISTRY, dataset_for, gt_dir as _gt_dir                                            # noqa: E402
 
 
 class SpendCapExceeded(RuntimeError):
@@ -88,13 +106,26 @@ class StageTimeout(RuntimeError):
 _LEAKED: List[str] = []
 _LEAKED_LOCK = threading.Lock()
 
-# The only two arms. Both are durable artifacts in production; everything between them is
-# deterministic given (RAW, judge report) and so is reconstructible rather than stored.
-ARMS = ("RAW", "FINAL")
+# The three scored arms. RAW and FINAL are durable artifacts in production; the states between
+# them are deterministic given (RAW, judge report) and so are reconstructible rather than
+# stored. RAW_POSTPROCESSED is not a pipeline state at all -- see DERIVED_ARMS.
+ARMS = ("RAW", "RAW_POSTPROCESSED", "FINAL")
+
+# Arms that exist only to make a comparison fair. They are computed from a real arm by a
+# deterministic, free transform; no model ever sees them and the product never emits them.
+#
+# {derived: (source, also_required)}. A derived arm is added automatically only when every arm
+# it exists to sit between is present -- i.e. on a run that MEASURES THE JUDGE. Requesting
+# `--arms RAW` alone still gives exactly RAW: a cheap extraction-only pass should not acquire
+# a dependency on the type postprocessor. But RAW+FINAL without RAW_POSTPROCESSED is a
+# comparison that credits the judge with the postprocessor's work (measured: 73 of 137 fields
+# on runs/main), so that combination is never written.
+DERIVED_ARMS = {"RAW_POSTPROCESSED": ("RAW", "FINAL")}
 
 STAGE_FILES = {
     "extract":                    "01_extract_raw.json",
     "extraction_postprocessing":  "02_extraction_postprocessing.json",
+    "raw_postprocessed":          "02b_raw_postprocessed.json",
     "judge":                      "03_judge_report.json",
     "refine":                     "04_refined.json",
     "postprocess":                "05_postprocessed.json",
@@ -197,6 +228,16 @@ class Runner:
             raise ValueError(f"unknown arm(s) {unknown}; valid arms are {sorted(ARMS)}.{hint}")
         if not arms:
             raise ValueError(f"no arms requested; valid arms are {sorted(ARMS)}")
+        # A derived arm is free and its absence is a scoring hazard, not a saving: add it
+        # whenever its source arm is present, and refuse it when the source is not, rather
+        # than writing a run whose arms cover different documents.
+        for derived, (source, companion) in DERIVED_ARMS.items():
+            if derived in arms and source not in arms:
+                raise ValueError(
+                    f"{derived} is derived from {source} and cannot be requested without it")
+            if source in arms and companion in arms and derived not in arms:
+                arms.append(derived)
+        arms = [a for a in ARMS if a in arms]          # canonical pipeline order
         self.cfg, self.arms, self.run_id = cfg, arms, run_id
         self.doc_type = cfg["run"]["doc_type"]
         # Which of the quality stage's two clean-image branches to reproduce. Not a debug
@@ -301,7 +342,9 @@ class Runner:
         body = {
             "doc_id": r.doc_id,
             "stage": stage,
-            "arm": {"extraction_postprocessing": "RAW", "postprocess": "FINAL"}.get(stage),
+            "arm": {"extraction_postprocessing": "RAW",
+                    "raw_postprocessed": "RAW_POSTPROCESSED",
+                    "postprocess": "FINAL"}.get(stage),
             "utc": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()),
             "cached": bool(r.cached_stages.get(stage, False)),
             "stage_ms": round(r.stage_ms.get(stage, 0.0), 1),
@@ -388,12 +431,26 @@ class Runner:
 
         The warnings and format_validation the worker persists are kept on the result so the
         stage dump can carry them; only `.data` is scored.
+
+        Prefer `_postprocess_outcome` inside run_document. This method keeps `self`-state for
+        callers outside the runner (scripts/add_raw_pp_arm.py), and with two arms now calling
+        the postprocessor per document that shared slot is a cross-contamination hazard: the
+        second call would silently overwrite the first, so whichever stage dump was written
+        later would carry the other arm's warnings and format-contract verdict.
+        """
+        outcome = self._postprocess_outcome(data)
+        self._last_postprocess = outcome
+        return outcome.data
+
+    def _postprocess_outcome(self, data: Dict[str, Any]):
+        """`_postprocess` without the `self._last_postprocess` side effect.
+
+        Returns the whole PostprocessOutcome so the caller owns the warnings and the format
+        validation for ITS stage, rather than reading them back out of shared state.
         """
         from ai.pipeline_core import postprocess_page
 
-        outcome = postprocess_page(data, self.doc_type, job_id=None)
-        self._last_postprocess = outcome
-        return outcome.data
+        return postprocess_page(data, self.doc_type, job_id=None)
 
     def _extract(self, r: DocResult, image: pathlib.Path, doc_id: str):
         key = self._cache_key(image, "extract")
@@ -482,6 +539,25 @@ class Runner:
             if "RAW" in self.arms:
                 r.arms["RAW"] = raw_pp
 
+            # ---- RAW_POSTPROCESSED = RAW + the type postprocessor -------------------
+            # Free: no model call. A SCORING CONSTRUCT, not a pipeline state -- production
+            # never builds this document. It exists so that the judge comparison has RAW and
+            # FINAL on the same side of the product's number parser; without it, 65 of the 125
+            # "judge fixes" measured on runs/main were really the postprocessor's
+            # negative-discount rule. See the module docstring.
+            if "RAW_POSTPROCESSED" in self.arms:
+                pp_raw = self._stage(r, "raw_postprocessed",
+                                     lambda: self._postprocess_outcome(raw_pp), budget="free")
+                r.arms["RAW_POSTPROCESSED"] = pp_raw.data
+                self._write_stage(r, "raw_postprocessed", pp_raw.data,
+                                  note="SCORING CONSTRUCT, never shipped and never shown to a "
+                                       "model: the same ai.pipeline_core.postprocess_page arm "
+                                       "FINAL ends with, applied to RAW instead of to refined "
+                                       "data, so both sides of the judge comparison use the "
+                                       "product's number parser",
+                                  warnings=pp_raw.warnings,
+                                  format_validation=pp_raw.format_validation)
+
             # ---- FINAL = RAW + judge + refinement + postprocessing = shipped output --
             if "FINAL" in self.arms:
                 # WRAPPER_KEYS rather than ai.judge.pipeline._EXTRACTION_WRAPPER_KEYS: the same
@@ -516,9 +592,13 @@ class Runner:
                                   note="intermediate, not scored: deterministic from "
                                        "02_extraction_postprocessing.json + 03_judge_report.json")
 
-                r.arms["FINAL"] = self._stage(r, "postprocess",
-                                              lambda: self._postprocess(refined), budget="free")
-                pp = self._last_postprocess
+                # _postprocess_outcome, not _postprocess: with RAW_POSTPROCESSED also
+                # calling the postprocessor, self._last_postprocess is written twice per
+                # document and whichever stage dump ran second would carry the other arm's
+                # warnings. Own the outcome locally.
+                pp = self._stage(r, "postprocess",
+                                 lambda: self._postprocess_outcome(refined), budget="free")
+                r.arms["FINAL"] = pp.data
                 self._write_stage(r, "postprocess", r.arms["FINAL"],
                                   note="the shipped output: ai.pipeline_core.postprocess_page "
                                        "on refined data -- the same call postprocessing_worker "
@@ -568,7 +648,7 @@ class Runner:
     def per_doc_budget(self) -> float:
         """Worst case for one document, from the stage budgets that now bound it."""
         t = self.stage_timeouts
-        return t["extract"] + (t["judge"] if "FINAL" in self.arms else 0.0) + 3 * t["free"]
+        return t["extract"] + (t["judge"] if "FINAL" in self.arms else 0.0) + 4 * t["free"]
 
     def run_plan(self, doc_ids: List[str], images: Dict[str, str],
                  doc_timeout: Optional[float] = None) -> List[DocResult]:
@@ -727,9 +807,12 @@ def main(argv=None) -> int:
     import argparse
     ap = argparse.ArgumentParser()
     ap.add_argument("--plan", required=True)
-    ap.add_argument("--arms", default="RAW,FINAL",
+    ap.add_argument("--arms", default="RAW,RAW_POSTPROCESSED,FINAL",
                     help="RAW = extraction + extraction_postprocessing (what the judge sees) · "
-                         "FINAL = RAW + judge + refinement + postprocessing (shipped output)")
+                         "RAW_POSTPROCESSED = RAW + the type postprocessor, a free scoring "
+                         "construct that is never shipped and is the judge's fair baseline · "
+                         "FINAL = RAW + judge + refinement + postprocessing (shipped output). "
+                         "RAW_POSTPROCESSED is added automatically whenever RAW is requested.")
     ap.add_argument("--limit", type=int, default=0, help="first N documents only (cost probe)")
     ap.add_argument("--run-id", default=None)
     ap.add_argument("--resume", action="store_true",
@@ -744,7 +827,16 @@ def main(argv=None) -> int:
     ap.add_argument("--concurrency", type=int, default=None,
                     help="override config.yaml; lower this first if a run stalls")
     ap.add_argument("--dataset", default=None,
-                    help="override run.dataset; required when a doc type has several datasets")
+                    help="override run.dataset; required when a doc type has several datasets. "
+                         "A dataset belongs to exactly one doc type, so naming one also sets "
+                         "the doc type unless --doc-type says otherwise.")
+    ap.add_argument("--doc-type", default=None,
+                    help="override run.doc_type. Rarely needed: --dataset implies it. Present "
+                         "so the runner takes the same flags as build_gt.py and step7.")
+    ap.add_argument("--dry-run", action="store_true",
+                    help="resolve the plan, the ground truth and every image, print what the "
+                         "run would be and what it would cost, then stop without a single "
+                         "model call. Worth the two seconds before a 500-document slice.")
     ap.add_argument("--image-prep", default=None,
                     choices=("quality_clean_jpeg", "source_bytes"),
                     help="override run.image_prep. quality_clean_jpeg reproduces the JPEG "
@@ -757,17 +849,70 @@ def main(argv=None) -> int:
     cfg = load()
     if a.dataset:
         cfg["run"]["dataset"] = a.dataset
+    if a.doc_type:
+        cfg["run"]["doc_type"] = a.doc_type
+    elif a.dataset:
+        # A DatasetEntry names exactly one doc type, so --dataset already answers the
+        # question and making the caller repeat it is a footgun rather than a safeguard:
+        # `--dataset fatura` against config.yaml's run.doc_type: receipt resolved the ground
+        # truth to gt/receipt/fatura/ and failed on a missing file rather than a wrong flag.
+        implied = REGISTRY[a.dataset].doc_type if a.dataset in REGISTRY else None
+        if implied and implied != cfg["run"]["doc_type"]:
+            print(f"doc type   : {implied} (implied by --dataset {a.dataset}; "
+                  f"config.yaml says {cfg['run']['doc_type']})")
+            cfg["run"]["doc_type"] = implied
     if a.image_prep:
         cfg["run"]["image_prep"] = a.image_prep
     sys.path.insert(0, cfg["paths"]["ai_backend"])
 
     plan = json.loads(pathlib.Path(a.plan).read_text(encoding="utf-8"))
     plan["_path"] = a.plan
+
+    # A PLAN KNOWS WHICH DATASET IT WAS BUILT FROM. build_gt.py and plan_by_split.py both write
+    # `dataset` into it, so honour that when the caller did not say otherwise -- config.yaml's
+    # run.dataset is a default for interactive use, not a fact about this plan file.
+    #
+    # The failure this prevents: running a cord plan while run.dataset still says sroie resolved
+    # the ground truth to gt/receipt/sroie/ and reported "10 plan documents are not in the
+    # ground truth". That was the loud case, because the two id spaces do not overlap. The quiet
+    # case is two datasets whose ids DO overlap, where the run would score every document
+    # against the wrong ground truth and report a number rather than an error.
+    plan_dataset = plan.get("dataset")
+    if plan_dataset:
+        if a.dataset and a.dataset != plan_dataset:
+            print(f"!! --dataset {a.dataset} contradicts the plan, which was built from "
+                  f"{plan_dataset!r} ({a.plan}).")
+            print("   Scoring a plan against another dataset's ground truth cannot be right. "
+                  "Drop the flag, or pass the plan that belongs to that dataset.")
+            return 2
+        if not a.dataset and cfg["run"].get("dataset") != plan_dataset:
+            print(f"dataset    : {plan_dataset} (from the plan; config.yaml says "
+                  f"{cfg['run'].get('dataset')!r})")
+            cfg["run"]["dataset"] = plan_dataset
+            implied = REGISTRY[plan_dataset].doc_type if plan_dataset in REGISTRY else None
+            if implied and implied != cfg["run"]["doc_type"]:
+                print(f"doc type   : {implied} (implied by the plan's dataset; config.yaml "
+                      f"says {cfg['run']['doc_type']})")
+                cfg["run"]["doc_type"] = implied
+        spec_check = plan.get("doc_type")
+        if spec_check and spec_check != cfg["run"]["doc_type"] and not a.doc_type:
+            cfg["run"]["doc_type"] = spec_check
     doc_ids = plan["doc_ids"][: a.limit] if a.limit else plan["doc_ids"]
 
     spec = doctypes.get(cfg["run"]["doc_type"])
-    gt = {r.doc_id: r for r in read_jsonl(
-        str(_gt_dir(spec.name, cfg["run"].get("dataset")) / "ground_truth.jsonl"))}
+    try:
+        gt_path = _gt_dir(spec.name, cfg["run"].get("dataset")) / "ground_truth.jsonl"
+    except KeyError as exc:
+        # A doc-type/dataset mismatch is a wrong flag, not a crash. Say which flag.
+        print(f"!! {exc.args[0]}")
+        return 2
+    if not gt_path.exists():
+        print(f"!! no ground truth at {gt_path}")
+        print(f"   doc type {spec.name} · dataset {cfg['run'].get('dataset')}")
+        print("   Build it first:  python scripts/build_gt.py "
+              f"--doc-type {spec.name} --dataset {cfg['run'].get('dataset')}")
+        return 2
+    gt = {r.doc_id: r for r in read_jsonl(str(gt_path))}
     not_in_gt = [d for d in doc_ids if d not in gt]
     if not_in_gt:
         print(f"!! {len(not_in_gt)} plan documents are not in the ground truth: {not_in_gt[:5]}")
@@ -781,6 +926,12 @@ def main(argv=None) -> int:
     # the data instead of the lookup. registry.dataset_for is the single place that knows
     # which paths.* entry a dataset lives under.
     entry = dataset_for(spec.name, cfg["run"].get("dataset"))
+    # The manifest records which reviewed field map this run was scored against. _map_path was
+    # never set, so _map_version fell through to its default and EVERY run -- SROIE's and
+    # CORD's included -- reported mapping/fatura_invoice.map.yaml's version. A run that names
+    # the wrong contract cannot be audited, and the two happened to agree ('1.0-frozen') often
+    # enough to look right.
+    cfg["_map_path"] = entry.map_path
     dataset = pathlib.Path(cfg["paths"][entry.root_config_key])
     images = {}
     for d in doc_ids:
@@ -801,6 +952,41 @@ def main(argv=None) -> int:
         return 2
 
     run_id = a.run_id or f"{pathlib.Path(a.plan).stem}-{time.strftime('%Y%m%d-%H%M%S')}"
+    if a.dry_run:
+        arms = [x.strip().upper() for x in a.arms.split(",") if x.strip()]
+        # Count cache hits against the FULL extraction key, not just the image hash: an entry
+        # for another model or another image_prep is not a hit, and counting it as one would
+        # under-quote the run.
+        cached, cache_note = 0, ""
+        cache_dir = _ROOT / cfg["cache"]["dir"]
+        if cfg["cache"]["enabled"] and cache_dir.is_dir():
+            try:
+                from ai.pipeline_core import IMAGE_PREP_VERSION
+                prep = IMAGE_PREP_VERSION + (
+                    "" if cfg["run"]["image_prep"] == "quality_clean_jpeg" else "-src")
+                suffix = (f".{cfg['models']['extraction']}"
+                          f".{cfg.get('prompt_version', 'frozen')}.{prep}.extract.json")
+                have = {f.name[:-len(suffix)] for f in cache_dir.glob(f"*{suffix}")}
+                cached = sum(
+                    1 for d in doc_ids
+                    if hashlib.sha256(pathlib.Path(images[d]).read_bytes()).hexdigest()[:16]
+                    in have)
+            except Exception as exc:                                     # noqa: BLE001
+                cache_note = f"  (could not read the cache: {type(exc).__name__})"
+        n_new = len(doc_ids) - cached
+        print(f"plan       : {a.plan}")
+        print(f"resolved   : doc type {spec.name} · dataset {entry.name}")
+        print(f"documents  : {len(doc_ids)}  "
+              f"({len({gt[d].cluster_id for d in doc_ids})} clusters)")
+        print(f"arms       : {','.join(arms)}")
+        print(f"ground truth: all {len(doc_ids)} present")
+        print(f"images     : all {len(doc_ids)} present under {dataset}")
+        print(f"cache      : {cached} already extracted, {n_new} would call the "
+              f"model{cache_note}")
+        print(f"run id     : {run_id}")
+        print(f"spend cap  : ${float(cfg['run']['spend_cap_usd']):,.2f}")
+        print("\n--dry-run: nothing was called and nothing was written.")
+        return 0
     if a.concurrency:
         cfg["run"]["concurrency"] = a.concurrency
     try:

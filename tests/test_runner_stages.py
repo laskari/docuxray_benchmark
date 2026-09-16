@@ -141,6 +141,7 @@ def test_stage_file_names_are_stable():
     assert R.STAGE_FILES == {
         "extract":                   "01_extract_raw.json",
         "extraction_postprocessing": "02_extraction_postprocessing.json",
+        "raw_postprocessed":         "02b_raw_postprocessed.json",
         "judge":                     "03_judge_report.json",
         "refine":                    "04_refined.json",
         "postprocess":               "05_postprocessed.json",
@@ -188,10 +189,13 @@ def test_one_stalled_document_does_not_stall_the_run(tmp_path, monkeypatch):
 
 
 def test_per_doc_budget_covers_the_stages_it_bounds(tmp_path, monkeypatch):
+    """Four free stages now, not three: RAW_POSTPROCESSED added one. This is a backstop, so it
+    is a flat count of every free stage that could run rather than a per-arm sum -- shrinking
+    it for a narrower arm set would invent document-level timeouts where there were none."""
     monkeypatch.setattr(R, "_ROOT", tmp_path)
-    assert R.Runner(_cfg(), ["RAW"], "t").per_doc_budget() == pytest.approx(0.4 + 3 * 0.4)
+    assert R.Runner(_cfg(), ["RAW"], "t").per_doc_budget() == pytest.approx(0.4 + 4 * 0.4)
     assert R.Runner(_cfg(), ["RAW", "FINAL"], "t").per_doc_budget() == \
-        pytest.approx(0.4 + 0.4 + 3 * 0.4)
+        pytest.approx(0.4 + 0.4 + 4 * 0.4)
 
 
 def test_old_arm_names_are_rejected_with_a_migration_hint(tmp_path, monkeypatch):
@@ -206,7 +210,26 @@ def test_old_arm_names_are_rejected_with_a_migration_hint(tmp_path, monkeypatch)
 
 def test_arm_names_are_normalised(tmp_path, monkeypatch):
     monkeypatch.setattr(R, "_ROOT", tmp_path)
-    assert R.Runner(_cfg(), [" raw ", "final"], "t").arms == ["RAW", "FINAL"]
+    # RAW + FINAL is a judge-measuring run, so the derived arm is added and the list comes
+    # back in pipeline order, not in the order it was typed.
+    assert R.Runner(_cfg(), [" final ", "raw"], "t").arms == \
+        ["RAW", "RAW_POSTPROCESSED", "FINAL"]
+
+
+def test_the_derived_arm_is_added_only_where_its_absence_would_mislead(tmp_path, monkeypatch):
+    """RAW+FINAL without RAW_POSTPROCESSED is the exact configuration that credited the judge
+    with 73 of 137 fixed fields on runs/main, so it cannot be built. A RAW-only pass is left
+    alone: it has no judge comparison to corrupt, and forcing the type postprocessor on it
+    would add an ai_backend dependency an extraction-only run does not need."""
+    monkeypatch.setattr(R, "_ROOT", tmp_path)
+    assert R.Runner(_cfg(), ["RAW"], "t").arms == ["RAW"]
+    assert R.Runner(_cfg(), ["FINAL"], "t").arms == ["FINAL"]
+    assert "RAW_POSTPROCESSED" in R.Runner(_cfg(), ["RAW", "FINAL"], "t").arms
+    assert R.Runner(_cfg(), ["RAW", "RAW_POSTPROCESSED"], "t").arms == \
+        ["RAW", "RAW_POSTPROCESSED"]
+    # ...but it cannot be conjured without the arm it is derived from.
+    with pytest.raises(ValueError, match="derived from RAW"):
+        R.Runner(_cfg(), ["RAW_POSTPROCESSED", "FINAL"], "t")
 
 
 def test_cli_timeout_overrides_config(tmp_path, monkeypatch):

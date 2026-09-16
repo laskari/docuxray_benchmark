@@ -30,7 +30,7 @@ from __future__ import annotations
 import pathlib
 import sys
 from dataclasses import dataclass, field
-from typing import Any, Dict, List, Optional, Sequence, Tuple
+from typing import Any, Callable, Dict, List, Optional, Sequence, Tuple
 
 sys.path.insert(0, str(pathlib.Path(__file__).resolve().parent.parent))
 
@@ -214,14 +214,85 @@ def _hungarian(cost: List[List[float]]) -> List[Tuple[int, int]]:
     return [(c, r) for r, c in pairs] if transposed else pairs
 
 
+def rate_of_row(row: Any) -> Optional[str]:
+    """The tax rate a charge row identifies itself by, from either side's `key`.
+
+    Ground truth writes 'GST(18%)' / 'VAT(5.99%)'; the pipeline emits 'GST(18%)',
+    'GST(18%) :' and 'TAX:VAT (5.99%)'. Returned as a 2dp string so it is hashable and
+    '18' and '18.00' cannot disagree. None means the row carries no rate and cannot be
+    aligned — which is the honest answer for a charge that is not a tax.
+    """
+    if not isinstance(row, dict):
+        return None
+    from core.matching import rate_from_key
+    r = rate_from_key(row.get("key"))
+    if r is None and row.get("percentage") is not None:
+        from core.normalize import numeric_from_field
+        r, _ = numeric_from_field(row.get("percentage"))
+    return None if r is None else f"{r:.2f}"
+
+
 def align(gt_rows: Sequence[Any], pred_rows: Sequence[Any], *,
           gt_match_keys: Sequence[str],
           row_targets: Dict[str, Tuple[str, ...]],
           pred_text_leaves: Sequence[str] = PRED_TEXT_LEAVES,
-          threshold: float = MATCH_THRESHOLD) -> RowAlignment:
-    """Pair GT rows with predicted rows by identity, exactly and deterministically."""
+          threshold: float = MATCH_THRESHOLD,
+          exact_key: Optional[Callable[[Any], Any]] = None) -> RowAlignment:
+    """Pair GT rows with predicted rows by identity, exactly and deterministically.
+
+    `exact_key` replaces the text matcher with an EXACT derived key, for sections whose rows
+    carry a discriminator of their own. It takes a row and returns a hashable key, or None for
+    "this row carries no such discriminator and cannot be aligned on one".
+
+    Multi-rate tax is the case that forced it (map contract 1.9). A tax line's identity IS its
+    printed rate: it is stated on the page and -- measured on all 400 multi-rate documents --
+    unique within every one of them. Nothing looser is safe here, because the labels on a
+    five-rate page differ ONLY in their digits: any rule that scored 'GST(1%)' and 'GST(18%)'
+    as near-identical strings would let the 1% ground-truth line be answered by the 18%
+    predicted entry, and report it as a match. The rate is compared exactly instead.
+    """
     gt_rows = list(gt_rows or [])
     pred_rows = list(pred_rows or [])
+    if exact_key is not None:
+        # Two passes, because a section can hold BOTH kinds of row. Rows that carry the exact
+        # key (a tax, which prints its rate) are paired on it; rows that do not (a real charge
+        # -- shipping, handling) fall through to the text matcher below on what is left. A
+        # charge can therefore never be paired with a tax line, and a mixed section still
+        # scores. FATURA exercises only the first pass: it annotates no non-tax charge.
+        al = RowAlignment(n_gt=len(gt_rows), n_pred=len(pred_rows))
+        taken_pred: set = set()
+        taken_gt: set = set()
+        keyed_pred = {x: exact_key(pr) for x, pr in enumerate(pred_rows)}
+        for i, g in enumerate(gt_rows):
+            k = exact_key(g)
+            if k is None:
+                continue
+            j = next((x for x in range(len(pred_rows))
+                      if x not in taken_pred and keyed_pred[x] == k), None)
+            if j is None:
+                taken_gt.add(i)          # it named a rate and nothing answered it
+                continue
+            taken_pred.add(j)
+            taken_gt.add(i)
+            al.matches.append(RowMatch(gt_index=i, pred_index=j, text_score=1.0,
+                                       matched_on="rate"))
+        rest_gt = [i for i in range(len(gt_rows)) if i not in taken_gt]
+        rest_pred = [j for j in range(len(pred_rows))
+                     if j not in taken_pred and keyed_pred[j] is None]
+        if rest_gt and rest_pred:
+            sub = align([gt_rows[i] for i in rest_gt], [pred_rows[j] for j in rest_pred],
+                        gt_match_keys=gt_match_keys, row_targets=row_targets,
+                        pred_text_leaves=pred_text_leaves, threshold=threshold)
+            for m in sub.matches:
+                al.matches.append(RowMatch(gt_index=rest_gt[m.gt_index],
+                                           pred_index=rest_pred[m.pred_index],
+                                           text_score=m.text_score, matched_on=m.matched_on))
+                taken_pred.add(rest_pred[m.pred_index])
+        al.matches.sort(key=lambda m: m.gt_index)
+        al.unmatched_gt = [i for i in range(len(gt_rows))
+                           if i not in {m.gt_index for m in al.matches}]
+        al.unmatched_pred = [j for j in range(len(pred_rows)) if j not in taken_pred]
+        return al
     al = RowAlignment(n_gt=len(gt_rows), n_pred=len(pred_rows))
     if not gt_rows or not pred_rows:
         al.unmatched_gt = list(range(len(gt_rows)))
@@ -265,7 +336,8 @@ def score_rows(gt_rows: Sequence[Any], pred_rows: Sequence[Any], *,
                pred_text_leaves: Sequence[str] = PRED_TEXT_LEAVES,
                doc_id: str = "", cluster_id: str = "",
                spec=None,
-               threshold: float = MATCH_THRESHOLD) -> Dict[str, Any]:
+               threshold: float = MATCH_THRESHOLD,
+               exact_key: Optional[Callable[[Any], Any]] = None) -> Dict[str, Any]:
     """Align, then score the matched rows cell by cell.
 
     Cells are scored ONLY on matched rows and ONLY where the GT row states a value. Both
@@ -279,7 +351,7 @@ def score_rows(gt_rows: Sequence[Any], pred_rows: Sequence[Any], *,
     crediting or penalising the routing.
     """
     al = align(gt_rows, pred_rows, gt_match_keys=gt_match_keys, row_targets=row_targets,
-               pred_text_leaves=pred_text_leaves, threshold=threshold)
+               pred_text_leaves=pred_text_leaves, threshold=threshold, exact_key=exact_key)
 
     cells: List[Dict[str, Any]] = []
     row_exact_flags: List[bool] = []
