@@ -11,6 +11,7 @@ Party roles are resolved in code rather than in the YAML because the mapping is 
 from __future__ import annotations
 
 import hashlib
+from decimal import Decimal, InvalidOperation
 import json
 import os
 import re
@@ -71,10 +72,6 @@ SCALAR_RULES: Dict[str, List[Target]] = {
     # postprocessed arm score worse than bare extraction as a pure sign artifact.
     "DISCOUNT":   [T("totals.discountPercentage", "pct_in_parens"),
                    T("totals.discountTotal", "money_abs")],
-    # Derived target: compared against paymentTerms.raw_text + customerMemo merged. DocuXray
-    # routes note text by content and splits a mixed NOTE across both -- see line 'NOTE' in the
-    # map's note_policy. Neither field alone is the right target.
-    "NOTE":       [T("invoiceInfo.noteText", "passthrough_strip")],
 }
 
 GST_KEY_RE = re.compile(r"^GST\(\s*\d+(?:\.\d+)?\s*%\)$", re.IGNORECASE)
@@ -89,6 +86,7 @@ UNMAPPED_LABELS = {
     "TITLE", "TOTAL_WORDS", "CONDITIONS", "LINE_ITEMS_TEXT",
     "GSTIN", "GSTIN_SELLER", "GSTIN_BUYER",         # no tax-ID field exists on Party
     "PAYMENT_DETAILS",                               # no bank/remittance group exists
+    "NOTE",                                          # ignored by user request
 }
 
 # ---------------------------------------------------------------------------------------
@@ -100,7 +98,10 @@ PARTY_SUBFIELD: Dict[str, Tuple[str, str]] = {
     # The OBJECT, not the .address leaf: the matcher merges all five components before
     # comparing. See address_policy in the map and MatchRule.ADDRESS.
     "Address": ("addressStructured", "address_whole"),
-    "Tel":     ("phone", "phone_normalise"),
+    # Stored AS PRINTED. The scorer reduces both sides to digits at comparison time, so this
+    # changes no published number (verified: 1,838 phone rows, zero verdict changes) while the
+    # ground truth now holds what the page shows. Changed 2026-09-09 (Naveen).
+    "Tel":     ("phone", "phone_verbatim"),
     "Email":   ("email", "passthrough_strip"),
     # 'Site' is deliberately absent: Party has no website field. SCHEMA GAP.
 }
@@ -336,11 +337,14 @@ class FaturaAdapter(DatasetAdapter):
         # Each write carries three things, because "the source said nothing here" and "the
         # source said something we could not parse" are different facts with different
         # consequences: the first is a scoreable absence, the second is an exclusion.
-        writes: Dict[str, List[Tuple[str, bool, Optional[str]]]] = {}
+        writes: Dict[str, List[Tuple[str, bool, Optional[str], Any]]] = {}
 
         def record(path: str, source: str, raw: Any, value: Optional[str]) -> None:
+            # The RAW label value is carried alongside the parsed one because `currency` has to
+            # fall back to the symbol printed on the page when no ISO code appears anywhere on
+            # the document, and the parsed value cannot say which symbol that was.
             raw_empty = raw is None or (isinstance(raw, str) and not raw.strip())
-            writes.setdefault(path, []).append((source, raw_empty, value))
+            writes.setdefault(path, []).append((source, raw_empty, value, raw))
 
         for label in sorted(labels):
             if label in UNMAPPED_LABELS or label in PARTY_LABELS or label == "LINE_ITEMS":
@@ -369,22 +373,40 @@ class FaturaAdapter(DatasetAdapter):
             if path in excluded:
                 continue
             candidates = writes.get(path, [])
-            values = [v for _, _, v in candidates if v is not None]
-            unparseable = [s for s, raw_empty, v in candidates if not raw_empty and v is None]
+            values = [v for _, _, v, _raw in candidates if v is not None]
+            unparseable = [s for s, raw_empty, v, _raw in candidates
+                           if not raw_empty and v is None]
 
             if path == "currency":
+                # An ISO code printed anywhere on the document settles it. Otherwise the page
+                # shows only a symbol, and the symbol is what is stored -- '$' as '$', not
+                # guessed as USD. Changed 2026-09-09 (Naveen): the previous rule excluded the
+                # field, which dropped 3,071 documents from the currency denominator rather
+                # than reporting what the page actually says. The consequence is published
+                # rather than hidden: the pipeline emits an ISO code for these pages, so it
+                # scores 0 on them, and that gap is a real difference between what is printed
+                # and what is shipped.
                 unambiguous = [v for v in values if v != AMBIGUOUS_CURRENCY]
                 if unambiguous:
                     values = unambiguous
                 elif values:
-                    excluded[path] = "only a bare '$' as currency evidence; ambiguous, not guessed"
-                    continue
+                    symbols = {sym for _s, _e, v, raw in candidates
+                               if v == AMBIGUOUS_CURRENCY
+                               for sym in (P.printed_currency_symbol(raw),) if sym}
+                    if len(symbols) == 1:
+                        values = [symbols.pop()]
+                    else:
+                        excluded[path] = (
+                            "several different currency symbols printed and no ISO code; "
+                            "not resolved by choosing one")
+                        continue
 
             if values:
                 if len(set(values)) > 1:
                     excluded[path] = (
                         "conflicting GT labels: "
-                        + ", ".join(f"{s}={v}" for s, _, v in candidates if v is not None)
+                        + ", ".join(f"{s}={v}" for s, _, v, _raw in candidates
+                                    if v is not None)
                     )
                     continue
                 gt[path] = values[0]                    # state (i): annotated and present
@@ -398,6 +420,49 @@ class FaturaAdapter(DatasetAdapter):
                 # template's vocabulary covers this path, so absence is authoritative.
                 gt[path] = ABSENT                       # state (ii): scoreable absence
             annotated.add(path)
+
+        # ---- multi-rate tax lines, promoted to a SCOREABLE structure ----------------
+        # The three scalar tax paths stay excluded above (Totals holds one tax), but the
+        # printed lines are facts on the page, so they are written here in the schema's own
+        # otherCharges shape -- whose description names "Tax" as an example of a
+        # document-level modifier. Added 2026-09-10 (Naveen), map contract 1.8.
+        #
+        # NOT SCORED YET, and that is deliberate. `totals.otherCharges` is not a leaf in
+        # schema/invoice_leaf_paths.tsv (only `totals.otherCharges[].key` and `[].value` are),
+        # so load_rule_registry gives it no rule and score_document skips it; and
+        # score_document_lists needs meta["row_targets"]["totals.otherCharges"], which nothing
+        # sets. Both gates verified by re-scoring s42_main2000 after this change: 0 difference
+        # in any arm, any field, any headline. Enabling it later means adding the rule and the
+        # keyed-list comparison, not touching the ground truth again.
+        #
+        # `key` is written in the rate-bearing form the pipeline also emits ("GST(18%)",
+        # "VAT(5.99%)") so the agreed matching rule -- compare the RATE extracted from the key,
+        # never the key string -- works symmetrically on both sides. `name` and `percentage`
+        # are kept alongside so no fact is lost to that formatting choice.
+        if notes.get("tax_lines"):
+            charges = []
+            for line in notes["tax_lines"]:
+                nm = line.get("key") or ""
+                pct = line.get("percentage")
+                charges.append({
+                    "key": f"{nm}({_pct_label(pct)}%)" if pct is not None else nm,
+                    "value": line.get("amount"),
+                    "name": nm,
+                    "percentage": pct,
+                })
+            if charges:
+                gt["totals.otherCharges"] = charges
+                annotated.add("totals.otherCharges")   # required: validate() rejects a gt key
+                                                       # that is not declared annotated
+                # Scoring config for the repeated-section path, read by score_document_lists.
+                # `key` and `value` are the two schema leaves; `percentage` and `name` ride
+                # along in the ground truth for provenance and are not scored as cells.
+                notes["row_targets"] = {**(notes.get("row_targets") or {}), "totals.otherCharges": {
+                    "key": ("key",), "value": ("value",)}}
+                notes["row_match_keys"] = {**(notes.get("row_match_keys") or {}),
+                                           "totals.otherCharges": ("key",)}
+                notes["row_text_leaves"] = {**(notes.get("row_text_leaves") or {}),
+                                            "totals.otherCharges": ("key",)}
 
         # ---- line items -------------------------------------------------------------
         li_status = data.get("_line_items_status")
@@ -457,6 +522,82 @@ class FaturaAdapter(DatasetAdapter):
             self.build_template_vocab()
         for name, data in self._iter_raw():
             yield self.build(name, data)
+
+
+# =======================================================================================
+# VERBATIM VARIANT  --  dataset `fatura_verbatim`
+# =======================================================================================
+# The SAME corpus and the SAME reviewed label contract, stored under a different VALUE
+# policy. Follows datasets/cord_receipt.py::CordVerbatimAdapter exactly, including the
+# reason it is a separate class rather than a constructor flag: registry.DatasetEntry.load()
+# passes only (root, spec), and a separate class is what guarantees
+# gt/invoice/fatura_verbatim/ can never be written by the canonical builder.
+#
+#   fatura            parsed    'TOTAL: "408.61 USD"' -> '408.61'
+#                     "does the pipeline produce the right AMOUNT?"
+#   fatura_verbatim   verbatim  'TOTAL: "408.61 USD"' -> '408.61 USD'
+#                     "does the pipeline TRANSCRIBE what is printed?"
+#
+# Only the parser NAME changes; the path each label writes, the template vocabulary, the
+# absence semantics, the exclusions and the known-GT-error list are all inherited unchanged,
+# so the two corpora share a denominator and the GAP between them is readable.
+#
+# Labels NOT reverted, and why:
+#   issueDateISO / dueDateISO   derived; no ISO string is printed on the page
+#   currency                    derived from the amount's suffix; there is no currency span
+#   GST(n%) rate                lives in the annotation KEY, not in any value
+#   NUMBER / DATE / DUE_DATE / PO_NUMBER / *.Name / *.Email
+#                               already verbatim -- `passthrough_strip` only trims whitespace
+#
+# SCORE THIS DATASET AGAINST `originalValue`. Verbatim GT and `normalizedValue` are
+# incompatible: GT '(-) 4.35' parses to -4.35 while the product ships +4.35, because
+# invoice_postprocessor._normalize_totals runs abs(). See fatura_parsers.py.
+
+VERBATIM_PARSERS: Dict[str, str] = {
+    # phone_normalise is no longer used by the canonical adapter either -- both datasets now
+    # store the printed phone. Kept so an older map that still names it maps correctly.
+    "phone_normalise": "phone_verbatim",
+    "address_whole":   "address_verbatim",
+    "money_amount":    "money_span_verbatim",
+    "money_abs":       "money_abs_verbatim",
+    "pct_in_parens":   "pct_span_verbatim",
+    "tax_pct":         "tax_pct_verbatim",
+    "tax_amount":      "tax_amount_verbatim",
+    # deliberately absent, i.e. inherited unchanged:
+    #   passthrough_strip (already verbatim), date_to_iso, money_currency,
+    #   rate_from_key, literal, tax_name
+}
+
+
+def _verbatim(target: Target) -> Target:
+    name = VERBATIM_PARSERS.get(target.parser)
+    return target if name is None else Target(target.path, name, target.kwargs)
+
+
+class FaturaVerbatimAdapter(FaturaAdapter):
+    """FaturaAdapter with every value-normalising parser swapped for its verbatim twin."""
+
+    source_name = "FATURA-verbatim"
+
+    def _targets_for(self, label: str) -> List[Target]:
+        return [_verbatim(t) for t in FaturaAdapter._targets_for(label)]
+
+    def _party_targets(self, label: str, role: str, data: dict):
+        return [(_verbatim(t), raw, source)
+                for t, raw, source in super()._party_targets(label, role, data)]
+
+
+def _pct_label(pct) -> str:
+    """Render a stored percentage the way the page prints it: '18.00' -> '18', '5.99' -> '5.99'.
+
+    Only affects the `key` string, which is matched by its extracted RATE, so this is a
+    readability choice rather than a scoring one.
+    """
+    try:
+        d = Decimal(str(pct)).normalize()
+        return f"{d:f}"
+    except (InvalidOperation, TypeError, ValueError):
+        return str(pct)
 
 
 def keyset_id(labels: Iterable[str]) -> str:

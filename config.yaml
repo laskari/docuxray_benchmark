@@ -12,7 +12,10 @@ paths:
   # NOTE 2026-09-03: the parent folder was renamed DocuXray_benchmark -> Benchmark, which left
   # this path dangling and would have failed every run at the pre-flight image check.
   dataset:        "../../Benchmark/FATURA_invoices_dataset"
-  dataset_docile: "../../Benchmark/DocILE"
+  dataset_sroie:  "../../Benchmark/sroie_data/SROIE"
+  # CORD-v2, materialised by scripts/prepare_cord_v2.py. One root holding all three splits:
+  # <root>/{train,dev,test}/{images,annotations}. 800 / 100 / 100.
+  dataset_cord:   "../../Benchmark/data/CORD_v2"
 
 models:
   # ai/extraction/gemini_extraction_service.py:100  -> os.getenv("GEMINI_MODEL", ...)
@@ -21,12 +24,10 @@ models:
   judge:      "gemini-3-flash-preview"
 
 run:
-  doc_type: invoice
-  # Which dataset to measure. Required once a doc type has more than one: doc_type alone no
-  # longer identifies the ground truth, since FATURA and DocILE100 are both invoices.
+  doc_type: receipt
+  # longer identifies the ground truth, since a doc type might have multiple datasets.
   #   fatura     10,000 synthetic invoices, 50 templates, NO line-item ground truth
-  #   docile100  100 real documents, 450 annotated line-item rows, no authoritative absence
-  dataset: fatura
+  dataset: sroie
   # What the extractor is fed. The app never extracts from the uploaded file -- it extracts
   # from the quality stage's clean image, and on the modal path those bytes are a
   # convert("RGB") + default-quality JPEG re-encode of the source (ai/quality/rotation.py:170)
@@ -35,14 +36,23 @@ run:
   #   source_bytes        pass the source file through      <- the no-detection branch
   # Changing this changes the pixels the model sees, so it is part of the response cache key.
   image_prep: quality_clean_jpeg
-  # Two arms, both durable artifacts in production:
-  #   RAW   = extraction + extraction_postprocessing  == pages.$.extraction_postprocessing_result
-  #                                                   == exactly what judge_worker.py:88 feeds the judge
-  #   FINAL = RAW + judge + refinement + postprocessing == pages.$.postprocessing_result (shipped)
+  # Three arms. Two are durable artifacts in production; the third is a scoring construct.
+  #   RAW               = extraction + extraction_postprocessing
+  #                       == pages.$.extraction_postprocessing_result
+  #                       == exactly what judge_worker.py:88 feeds the judge
+  #   RAW_POSTPROCESSED = RAW + the type postprocessor. NOT A PIPELINE STATE -- production
+  #                       never builds this document and no model ever sees it. It exists
+  #                       because NumericValue sets extra="forbid", so RAW carries only
+  #                       originalValue and is scored by the BENCHMARK's number parser while
+  #                       FINAL is scored by the PRODUCT's. Measured on runs/main: that
+  #                       asymmetry alone accounted for 65 of 125 "judge fixes". Do not
+  #                       "fix" the pipeline to match this arm.
+  #   FINAL             = RAW + judge + refinement + postprocessing
+  #                       == pages.$.postprocessing_result (shipped)
   # The intermediates (bare extraction, refined-before-postprocessing) are written to
   # runs/<id>/stages/ for inspection but are not scored: they are deterministic from
   # (RAW, judge report), both of which are cached. See scripts/derive_arms.py.
-  arms: [RAW, FINAL]
+  arms: [RAW, RAW_POSTPROCESSED, FINAL]
   concurrency: 2         # each doc fans out to 4 extraction parts then 5 judge sections;
                          # 4 docs = up to 20 concurrent calls, which trips rate limiting
   # Hard per-stage wall-clock budgets, in seconds. These are what stops a run from freezing.
@@ -59,6 +69,36 @@ run:
   spend_cap_usd: 250.0
   # Abort if the first N documents project past the cap.
   early_abort_after: 10
+
+scoring:
+  # WHICH ARM THE JUDGE IS MEASURED AGAINST. Two keys, deliberately, because they answer
+  # two different questions and collapsing them into one is an 11-point error.
+  #
+  #   judge_baseline_arm  what fields_fixed / fields_harmed / net_lift / harm_rate compare
+  #                       FINAL against. RAW_POSTPROCESSED, so a difference the product's
+  #                       number parser would have produced anyway is not credited to the
+  #                       judge. Falls back to RAW, loudly, on runs built before this arm.
+  #   judge_detector_arm  what the detector confusion matrix scores flags against. RAW, and
+  #                       it must stay RAW: the judge's flags are a response to what the
+  #                       judge was SHOWN, so its recall denominator is errors in RAW.
+  #                       Pointing this at RAW_POSTPROCESSED moved detector recall from
+  #                       29.9% to 40.9% purely by shrinking the denominator.
+  # ONE COMPARISON RULE FOR EVERY KEY, so one number means one thing.
+  #   exact      a value counts only if it is exact after normalisation -- including text and
+  #              address. This is what the reported ACCURACY figure uses.
+  #   threshold  text/address pass at ANLS >= 0.8 (the earlier behaviour, kept for comparison
+  #              with published DocVQA-style numbers).
+  # Normalisation still applies under `exact`: case, whitespace and unicode form are not the
+  # thing being measured, and address components are merged before comparison because which
+  # component a model puts each piece in is not a correctness question.
+  match_policy: exact
+  judge_baseline_arm: RAW_POSTPROCESSED
+  judge_detector_arm: RAW
+  # Fail rather than publish when the arms in a run do not cover an identical document set.
+  # runs/main scored RAW and FINAL on 1,000 documents and RAW_POSTPROCESSED on 969, and
+  # printed all three in one results.md. Override per invocation with
+  # `step7_metrics.py --allow-arm-mismatch`, never here.
+  require_equal_arm_denominators: true
 
 cache:
   enabled: true

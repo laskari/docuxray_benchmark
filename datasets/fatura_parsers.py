@@ -85,6 +85,12 @@ def literal(raw, *, value: str = "", **_) -> Optional[str]:
 @parser("address_whole")
 def address_whole(raw, *, key: str = "", **_) -> Optional[str]:
     """Flatten a multi-line address block to one comma-separated normalised line."""
+    if isinstance(raw, dict):
+        parts = []
+        for k in ["address", "city", "state", "postal_code", "country"]:
+            if raw.get(k):
+                parts.append(str(raw[k]))
+        raw = ", ".join(parts)
     return normalise_address(raw)
 
 
@@ -129,6 +135,24 @@ def money_abs(raw, *, key: str = "", **_) -> Optional[str]:
     """
     value = normalise_money(raw, which="last")
     return money_to_str(abs(value)) if value is not None else None
+
+
+_CURRENCY_SYMBOLS = ("$", "\u20ac", "\u00a3", "\u00a5", "\u20b9")
+
+
+def printed_currency_symbol(raw) -> Optional[str]:
+    """The currency symbol as it appears in the source, or None.
+
+    Used only when no ISO code is printed anywhere on the document: the ground truth then
+    records the symbol rather than excluding the field or guessing a code from it.
+    """
+    if raw is None:
+        return None
+    s = str(raw)
+    for sym in _CURRENCY_SYMBOLS:
+        if sym in s:
+            return sym
+    return None
 
 
 @parser("money_currency")
@@ -201,6 +225,118 @@ def rate_from_key(raw, *, key: str = "", **_) -> Optional[str]:
         return None
     from decimal import Decimal
     return money_to_str(Decimal(m.group(1)))
+
+
+
+# ======================================================================================
+# VERBATIM PARSERS  --  dataset `fatura_verbatim` only
+# ======================================================================================
+# One rule: the ground truth is the PRINTED SPAN, character for character. Nothing is
+# parsed, quantised, case-folded, re-ordered or sign-corrected. Where one FATURA label
+# carries several facts the span is cut at the label's own punctuation, and every
+# character inside the cut is kept -- parentheses, the '(-)' marker, the currency suffix,
+# the '%'. The span rule is the whole contract and is stated per label below.
+#
+# ONE carve-out, and it is not a value change: `strip_label_prefix` removes a leaked
+# ALL_CAPS annotation key ('BALANCE_DUE : 481.84 $' -> '481.84 $'). That prefix is the
+# annotator's label, not text belonging to the field.
+#
+# CONSEQUENCE, stated here because it is a trap: verbatim ground truth is INCOMPATIBLE
+# with scoring against `normalizedValue`. GT '(-) 4.35' parses to -4.35 while the product
+# ships +4.35 (invoice_postprocessor._normalize_totals runs abs()), so every discounted
+# invoice would fail on a sign convention. Score this dataset against `originalValue`.
+# --------------------------------------------------------------------------------------
+
+# A parenthesised percentage, parentheses included: '(1.85%)'. Falls back to a bare
+# '1.85%' when the source prints no parentheses.
+_PCT_SPAN_PARENS_RE = re.compile(r"\(\s*\d+(?:\.\d+)?\s*%\s*\)")
+_PCT_SPAN_BARE_RE = re.compile(r"\d+(?:\.\d+)?\s*%")
+
+
+def _after_colon(raw) -> Optional[str]:
+    """The span to the right of the label's own separator, verbatim."""
+    if raw is None:
+        return None
+    s = strip_label_prefix(str(raw))
+    tail = s.split(":", 1)[1] if ":" in s else s
+    return tail.strip() or None
+
+
+@parser("phone_verbatim")
+def phone_verbatim(raw, *, key: str = "", **_) -> Optional[str]:
+    """'+(833)841-9035' stays '+(833)841-9035'. Outer whitespace only."""
+    if raw is None:
+        return None
+    return str(raw).strip() or None
+
+
+@parser("address_verbatim")
+def address_verbatim(raw, *, key: str = "", **_) -> Optional[str]:
+    """The printed block as written -- newline and casing preserved.
+
+    A dict source is joined with ', ' in the schema's component order, which is the only
+    way a structured source can become one span at all; a FATURA address is a string, so
+    that branch never fires here.
+    """
+    if raw is None:
+        return None
+    if isinstance(raw, dict):
+        parts = [str(raw[k]) for k in ("address", "city", "state", "postal_code", "country")
+                 if raw.get(k)]
+        raw = ", ".join(parts)
+    return str(raw).strip() or None
+
+
+@parser("money_span_verbatim")
+def money_span_verbatim(raw, *, key: str = "", **_) -> Optional[str]:
+    """The whole printed amount, currency included. '408.61 USD' -> '408.61 USD'.
+
+    Used for TOTAL, AMOUNT_DUE, SUB_TOTAL and the GST amount, whose label carries exactly
+    one amount and nothing else.
+    """
+    if raw is None:
+        return None
+    return strip_label_prefix(str(raw)).strip() or None
+
+
+@parser("pct_span_verbatim")
+def pct_span_verbatim(raw, *, key: str = "", **_) -> Optional[str]:
+    """DISCOUNT's rate with its parentheses. '(1.85%): (-) 13.42' -> '(1.85%)'."""
+    if raw is None:
+        return None
+    s = str(raw)
+    m = _PCT_SPAN_PARENS_RE.search(s) or _PCT_SPAN_BARE_RE.search(s)
+    return m.group(0).strip() if m else None
+
+
+@parser("money_abs_verbatim")
+def money_abs_verbatim(raw, *, key: str = "", **_) -> Optional[str]:
+    """DISCOUNT's amount with its printed sign marker. '(1.85%): (-) 13.42' -> '(-) 13.42'.
+
+    Deliberately NOT `money_abs`: the '(-)' is on the page, so a transcription ground truth
+    keeps it. See the incompatibility note at the top of this section.
+    """
+    return _after_colon(raw)
+
+
+@parser("tax_pct_verbatim")
+def tax_pct_verbatim(raw, *, key: str = "", **_) -> Optional[str]:
+    """'VAT (3.88%): 28.18 EUR' -> '(3.88%)'."""
+    return pct_span_verbatim(raw, key=key)
+
+
+@parser("tax_amount_verbatim")
+def tax_amount_verbatim(raw, *, key: str = "", **_) -> Optional[str]:
+    """'VAT (3.88%): 28.18 EUR' -> '28.18 EUR'.
+
+    The span after the colon, with any parenthesised group dropped so the rate can never
+    leak into the amount -- the same guard `tax_amount` uses, for the same reason.
+    """
+    tail = _after_colon(raw)
+    if tail is None:
+        return None
+    tail = re.sub(r"\([^)]*\)", " ", tail)
+    return re.sub(r"\s{2,}", " ", tail).strip() or None
 
 
 __all__ = [

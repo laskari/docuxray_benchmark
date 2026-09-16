@@ -1,5 +1,5 @@
 {
-  "dataset": "fatura",
+  "dataset": "fatura_verbatim",
   "doc_type": "invoice",
   "dataset_root": "/sessions/rcw-011cgzpmnktca62bdfagbtty/mnt/Documents/Xelp_work/DocuXray/Benchmark/FATURA_invoices_dataset",
   "root_overridden": false,
@@ -7,7 +7,7 @@
   "n_clusters": 50,
   "n_keysets": 99,
   "n_gt_line_item_rows": 0,
-  "scoreable_paths": 26,
+  "scoreable_paths": 25,
   "headline_eligible_paths": 23,
   "headline_bar": {
     "min_docs": 30,
@@ -28,7 +28,6 @@
       "distinct_gt_values": 3,
       "absent_docs": 0,
       "headline_eligible": false,
-      "headline_bar_reason": null,
       "constant_across_clusters": false
     },
     {
@@ -38,7 +37,6 @@
       "distinct_gt_values": 8794,
       "absent_docs": 0,
       "headline_eligible": true,
-      "headline_bar_reason": null,
       "constant_across_clusters": false
     },
     {
@@ -48,7 +46,6 @@
       "distinct_gt_values": 4507,
       "absent_docs": 2,
       "headline_eligible": true,
-      "headline_bar_reason": null,
       "constant_across_clusters": false
     },
     {
@@ -58,7 +55,6 @@
       "distinct_gt_values": 4507,
       "absent_docs": 2,
       "headline_eligible": true,
-      "headline_bar_reason": null,
       "constant_across_clusters": false
     },
     {
@@ -68,7 +64,6 @@
       "distinct_gt_values": 6516,
       "absent_docs": 0,
       "headline_eligible": true,
-      "headline_bar_reason": null,
       "constant_across_clusters": false
     },
     {
@@ -78,7 +73,6 @@
       "distinct_gt_values": 6516,
       "absent_docs": 0,
       "headline_eligible": true,
-      "headline_bar_reason": null,
       "constant_across_clusters": false
     },
     {
@@ -88,7 +82,6 @@
       "distinct_gt_values": 100,
       "absent_docs": 0,
       "headline_eligible": true,
-      "headline_bar_reason": null,
       "constant_across_clusters": false
     },
     {
@@ -98,7 +91,6 @@
       "distinct_gt_values": 7400,
       "absent_docs": 0,
       "headline_eligible": true,
-      "headline_bar_reason": null,
       "constant_across_clusters": false
     },
     {
@@ -108,7 +100,6 @@
       "distinct_gt_values": 7290,
       "absent_docs": 0,
       "headline_eligible": true,
-      "headline_bar_reason": null,
       "constant_across_clusters": false
     },
     {
@@ -118,7 +109,6 @@
       "distinct_gt_values": 7052,
       "absent_docs": 0,
       "headline_eligible": true,
-      "headline_bar_reason": null,
       "constant_across_clusters": false
     },
     {
@@ -128,7 +118,6 @@
       "distinct_gt_values": 7400,
       "absent_docs": 0,
       "headline_eligible": true,
-      "headline_bar_reason": null,
       "constant_across_clusters": false
     },
     {
@@ -138,7 +127,6 @@
       "distinct_gt_values": 41,
       "absent_docs": 1800,
       "headline_eligible": true,
-      "headline_bar_reason": null,
       "constant_across_clusters": false
     },
     {
@@ -148,7 +136,6 @@
       "distinct_gt_values": 22,
       "absent_docs": 5600,
       "headline_eligible": true,
-      "headline_bar_reason": null,
       "constant_across_clusters": false
     },
     {
@@ -158,7 +145,6 @@
       "distinct_gt_values": 34,
       "absent_docs": 3200,
       "headline_eligible": true,
-      "headline_bar_reason": null,
       "constant_across_clusters": false
     },
     {
@@ -168,7 +154,6 @@
       "distinct_gt_values": 1800,
       "absent_docs": 0,
       "headline_eligible": true,
-      "headline_bar_reason": null,
       "constant_across_clusters": false
     },
     {
@@ -178,7 +163,6 @@
       "distinct_gt_values": 1789,
       "absent_docs": 0,
       "headline_eligible": true,
-      "headline_bar_reason": null,
       "constant_across_clusters": false
     },
     {
@@ -188,7 +172,6 @@
       "distinct_gt_values": 1783,
       "absent_docs": 0,
       "headline_eligible": true,
-      "headline_bar_reason": null,
       "constant_across_clusters": false
     },
     {
@@ -198,7 +181,6 @@
       "distinct_gt_values": 1800,
       "absent_docs": 0,
       "headline_eligible": true,
-      "headline_bar_reason": null,
       "constant_across_clusters": false
     },
     {
@@ -208,7 +190,6 @@
       "distinct_gt_values": 399,
       "absent_docs": 0,
       "headline_eligible": true,
-      "headline_bar_reason": null,
       "constant_across_clusters": false
     },
     {
@@ -218,37 +199,24 @@
       "distinct_gt_values": 1789,
       "absent_docs": 0,
       "headline_eligible": true,
-      "headline_bar_reason": null,
-      "constant_across_clusters": false
-    },
-    {
-      "path": "totals.otherCharges",
-      "n_docs": 400,
-      "n_clusters": 2,
-      "distinct_gt_values": 400,
-      "absent_docs": 0,
-      "headline_eligible": false,
-      "headline_bar_reason": "multi-rate tax lines on 2 templates / 400 documents. The diversity bar passes it (the amounts differ per document) but the PATTERN does not: two layouts, and a keyed list scored per line rather than per document. A coverage and regression row, never a performance claim. Decided 2026-09-10 (Naveen), map contract 1.8.",
       "constant_across_clusters": false
     },
     {
       "path": "totals.subtotal",
       "n_docs": 6800,
       "n_clusters": 34,
-      "distinct_gt_values": 6607,
+      "distinct_gt_values": 6742,
       "absent_docs": 3,
       "headline_eligible": true,
-      "headline_bar_reason": null,
       "constant_across_clusters": false
     },
     {
       "path": "totals.taxAmount",
       "n_docs": 4400,
       "n_clusters": 22,
-      "distinct_gt_values": 3293,
+      "distinct_gt_values": 4053,
       "absent_docs": 0,
       "headline_eligible": true,
-      "headline_bar_reason": null,
       "constant_across_clusters": false
     },
     {
@@ -258,27 +226,24 @@
       "distinct_gt_values": 2,
       "absent_docs": 0,
       "headline_eligible": false,
-      "headline_bar_reason": null,
       "constant_across_clusters": false
     },
     {
       "path": "totals.taxPercentage",
       "n_docs": 4400,
       "n_clusters": 22,
-      "distinct_gt_values": 403,
+      "distinct_gt_values": 404,
       "absent_docs": 0,
       "headline_eligible": true,
-      "headline_bar_reason": null,
       "constant_across_clusters": false
     },
     {
       "path": "totals.totalIncludingTax",
       "n_docs": 8399,
       "n_clusters": 42,
-      "distinct_gt_values": 8066,
+      "distinct_gt_values": 8297,
       "absent_docs": 0,
       "headline_eligible": true,
-      "headline_bar_reason": null,
       "constant_across_clusters": false
     }
   ]

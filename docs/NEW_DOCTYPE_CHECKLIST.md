@@ -44,8 +44,8 @@ confidence intervals come out too narrow.**
 ## 4. Author the field map — BLIND
 
 ```bash
-python steps/step1_key_mapping.py --doc-type receipt --dataset-labels
-python steps/step1_key_mapping.py --doc-type receipt --schema-paths
+python steps/step1_key_mapping.py --doc-type receipt --dataset cord --dataset-labels
+python steps/step1_key_mapping.py --doc-type receipt --dataset cord --schema-paths
 ```
 
 Write `mapping/cord_receipt.map.yaml` from label semantics against the schema's field
@@ -66,10 +66,10 @@ Add `paths.dataset_cord` to `config.yaml` as a **relative** path.
 ## 6. Run the seven steps
 
 ```bash
-python steps/step1_key_mapping.py --doc-type receipt --check
-python steps/step2_ground_truth.py --doc-type receipt
+python steps/step1_key_mapping.py --doc-type receipt --dataset cord --check
+python scripts/build_gt.py --doc-type receipt --dataset cord
 python steps/step3_environment.py
-python steps/step4_sampling.py --doc-type receipt --describe
+python steps/step4_sampling.py --doc-type receipt --dataset cord --describe
 python steps/step5_run.py --plan gt/receipt/smoke_*.json --arms RAW,FINAL --limit 10 --run-id r-probe
 python scripts/recost.py runs/r-probe
 python steps/step6_compare.py runs/r-probe

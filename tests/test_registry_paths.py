@@ -26,10 +26,14 @@ def cfg():
 
 
 def test_every_dataset_has_its_own_config_path(cfg):
-    keys = [e.root_config_key for e in REGISTRY.values()]
+    """A DECLARED variant may share its base's root -- it is the same corpus, stored under a
+    different value policy. An UNDECLARED collision is the DocILE/FATURA failure and still
+    fails here."""
+    keys = [e.root_config_key for e in REGISTRY.values() if not e.variant_of]
     assert len(keys) == len(set(keys)), (
-        f"two datasets share a root_config_key {keys} — one would silently read the other's "
-        f"images, which is exactly the DocILE/FATURA failure")
+        f"two non-variant datasets share a root_config_key {keys} — one would silently read "
+        f"the other's images, which is exactly the DocILE/FATURA failure. If they really are "
+        f"the same corpus, say so with variant_of=")
     for e in REGISTRY.values():
         assert e.root_config_key in cfg["paths"], (
             f"{e.name} declares paths.{e.root_config_key}, which config.yaml does not define")
@@ -47,22 +51,57 @@ def test_every_dataset_has_its_own_ground_truth_directory():
 
 
 def test_every_dataset_has_its_own_reviewed_map():
-    maps = [e.map_path for e in REGISTRY.values()]
-    assert len(maps) == len(set(maps))
+    """Same rule as the root path: a declared variant shares its base's reviewed map, because
+    the label -> status contract is identical and only the stored value differs. Two unrelated
+    datasets sharing one map would mean one of them was never reviewed."""
+    maps = [e.map_path for e in REGISTRY.values() if not e.variant_of]
+    assert len(maps) == len(set(maps)), (
+        f"two non-variant datasets share a reviewed map {maps}; one of them has no contract "
+        f"of its own. If they are the same corpus, declare variant_of=")
     root = pathlib.Path(__file__).resolve().parent.parent
     for e in REGISTRY.values():
         assert (root / e.map_path).exists(), f"{e.name}: {e.map_path} does not exist"
 
 
-def test_an_ambiguous_doc_type_raises_instead_of_guessing():
-    """Two invoice datasets are registered. Returning the first would make the answer depend
-    on dict insertion order, so a run could be scored against a dataset it did not measure."""
-    invoices = [e for e in REGISTRY.values() if e.doc_type == "invoice"]
-    assert len(invoices) > 1, "this test is only meaningful while a doc type has several"
-    with pytest.raises(KeyError, match="name one explicitly"):
-        dataset_for("invoice")
-    for e in invoices:
-        assert dataset_for("invoice", e.name) is e
+def test_a_variant_declares_a_real_base_and_its_own_ground_truth():
+    """The exemption above is only safe if a variant is a variant of something real, of the
+    same doc type, and cannot overwrite its base's ground truth."""
+    for e in REGISTRY.values():
+        if not e.variant_of:
+            continue
+        base = REGISTRY.get(e.variant_of)
+        assert base is not None, f"{e.name} declares variant_of={e.variant_of!r}, which is not a dataset"
+        assert base.doc_type == e.doc_type, (
+            f"{e.name} is a {e.doc_type} dataset but its base {base.name} is {base.doc_type}")
+        assert not base.variant_of, f"{e.name} is a variant of a variant ({base.name})"
+        assert e.gt_subdir and e.gt_subdir != base.gt_subdir, (
+            f"{e.name} shares gt_subdir {e.gt_subdir!r} with its base {base.name} — the two "
+            f"store DIFFERENT ground truth and one build would overwrite the other")
+
+
+def test_naming_a_dataset_returns_that_dataset():
+    """An orphaned `for e in invoices:` fragment sat here referring to a name no longer
+    defined, so this file raised NameError instead of asserting anything. Restored, and
+    generalised past invoices."""
+    for e in REGISTRY.values():
+        assert dataset_for(e.doc_type, e.name) is e
+
+
+def test_a_dataset_asked_for_under_the_wrong_doc_type_is_rejected():
+    """`--dataset fatura` against run.doc_type: receipt used to return the FATURA entry
+    regardless, build the path gt/receipt/fatura/, and surface three frames later as a
+    FileNotFoundError on a directory that can never exist. The registry knows which doc type
+    each dataset belongs to, so it says so."""
+    wrong = [(e, other) for e in REGISTRY.values()
+             for other in {x.doc_type for x in REGISTRY.values()} if other != e.doc_type]
+    if not wrong:
+        pytest.skip("only one doc type is registered")
+    for e, other in wrong:
+        with pytest.raises(KeyError) as exc:
+            dataset_for(other, e.name)
+        message = str(exc.value)
+        assert e.doc_type in message and e.name in message
+        assert "--doc-type" in message
 
 
 def test_the_declared_doc_type_exists(cfg):

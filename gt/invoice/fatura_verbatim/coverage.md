@@ -1,8 +1,8 @@
-# fatura — ground-truth coverage
+# fatura_verbatim — ground-truth coverage
 
 10000 documents · 50 clusters · 99 key-sets · 0 annotated line-item rows
 
-26 scoreable paths, of which 23 clear the headline bar (>= 30 documents and >= 20 distinct ground-truth values, and not constant across clusters).
+25 scoreable paths, of which 23 clear the headline bar (>= 30 documents and >= 20 distinct ground-truth values, and not constant across clusters).
 
 | path | docs | clusters | distinct | absent | headline |
 |---|---|---|---|---|---|
@@ -26,12 +26,11 @@
 | `parties.shipTo.phone` | 1800 | 9 | 1800 | 0 | yes |
 | `totals.discountPercentage` | 2400 | 12 | 399 | 0 | yes |
 | `totals.discountTotal` | 2400 | 12 | 1789 | 0 | yes |
-| `totals.otherCharges` | 400 | 2 | 400 | 0 | no |
-| `totals.subtotal` | 6800 | 34 | 6607 | 3 | yes |
-| `totals.taxAmount` | 4400 | 22 | 3293 | 0 | yes |
+| `totals.subtotal` | 6800 | 34 | 6742 | 3 | yes |
+| `totals.taxAmount` | 4400 | 22 | 4053 | 0 | yes |
 | `totals.taxName` | 4400 | 22 | 2 | 0 | no |
-| `totals.taxPercentage` | 4400 | 22 | 403 | 0 | yes |
-| `totals.totalIncludingTax` | 8399 | 42 | 8066 | 0 | yes |
+| `totals.taxPercentage` | 4400 | 22 | 404 | 0 | yes |
+| `totals.totalIncludingTax` | 8399 | 42 | 8297 | 0 | yes |
 
 ## Exclusions recorded, with reasons
 

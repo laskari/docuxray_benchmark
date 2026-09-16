@@ -46,9 +46,46 @@ class DocTypeSpec:
     """Never scoreable, with a published reason: reasoning text, self-reported confidence,
     run metadata. Any addition needs a written justification in the field map."""
 
+    contained_leaves: FrozenSet[str] = frozenset()
+    """Leaves that are scored based on substring containment rather than exact/ANLS match."""
+
     list_paths: FrozenSet[str] = frozenset()
     """Repeated sections needing row alignment before per-cell scoring. Score these only with
     a row-alignment matcher; a naive index-wise comparison is meaningless."""
+
+    rate_keyed_lists: FrozenSet[str] = frozenset()
+    """Repeated sections whose rows are paired on the RATE carried in each row's key, matched
+    exactly. A tax line's identity IS its rate: it is printed, it is unique within every one of
+    the 400 multi-rate documents, and it is the only thing that distinguishes five otherwise
+    identical GST lines. Pairing anything else -- including a text-similarity score over labels
+    that differ only in their digits -- risks answering the 1% line with the 18% entry.
+
+    Empty by default, so every other section keeps the alignment it was measured under. Where
+    it is set, a row carrying no rate is not force-paired: it falls through to the text matcher
+    on what is left, so a real charge can never be paired with a tax line. Measured on this
+    run, that fallback fires on 0 of 708 matched rows -- FATURA annotates no non-tax charge."""
+
+    convention_criterion: bool = False
+    """Publish the CONVENTION-ADJUSTED criterion beside the exact one (map contract 1.11).
+
+    Off by default, so a doc type that has not enumerated and measured its notation
+    differences reports one number, as before. The comparison always computes both verdicts;
+    this decides whether the second is aggregated and reported. CORD and DOCILE leave it off
+    and their results are byte-identical."""
+
+    charge_label_paths: FrozenSet[str] = frozenset()
+    """Row leaves holding a charge LABEL -- a charge name and a printed rate in one string --
+    compared as those two facts rather than as one string (map contract 1.10, see
+    MatchRule.CHARGE_LABEL). Declared as whole leaf paths, not leaf names, because 'key' is
+    also CORD's and DOCILE's line-item caption leaf and those keep the text rule."""
+
+    list_union_sources: Mapping[str, Tuple[str, ...]] = field(default_factory=dict)
+    """Scalar paths that may hold a row belonging to a repeated section, appended to the
+    prediction side before alignment. Needed where the pipeline routes one printed fact to
+    either place depending on how many of them there are: on FATURA's Template29 the GST line
+    goes to totals.otherCharges and the VAT line to the scalar tax triple on 24 of 40 sampled
+    documents. Scored against the list alone that template recovers 66.25%; against the union,
+    96.25%. Same reasoning as merged_targets, one level up."""
 
     def __post_init__(self):
         if not self.name or not self.schema_model:
@@ -74,12 +111,21 @@ INVOICE = DocTypeSpec(
     name="invoice",
     schema_model="InvoiceData",
     wrapper_key="invoiceOutputData",
+    rate_keyed_lists=frozenset({"totals.otherCharges"}),
+    charge_label_paths=frozenset({"totals.otherCharges[].key"}),
+    convention_criterion=True,
+    list_union_sources={
+        # Multi-rate tax: Totals holds ONE tax, so a page printing several strands the rest.
+        # The pipeline splits them across otherCharges and the scalar triple; the union puts
+        # both back on the table before alignment. Map contract 1.9.
+        "totals.otherCharges": ("totals.taxName", "totals.taxPercentage", "totals.taxAmount"),
+    },
     merged_targets={
         # DocuXray routes note text BY CONTENT: a payment sentence goes to
         # paymentTerms.raw_text, everything else to customerMemo, and a mixed NOTE is split
         # across both. Measured on 10 documents; neither field alone is the right target.
-        "invoiceInfo.noteText": ("invoiceInfo.paymentTerms.raw_text",
-                                 "invoiceInfo.customerMemo"),
+        # "invoiceInfo.noteText": ("invoiceInfo.paymentTerms.raw_text",
+        #                          "invoiceInfo.customerMemo"),
     },
     identifier_leaves=_COMMON_IDENTIFIERS,
     date_leaves=frozenset({"issueDate", "dueDate", "serviceDate", "deliveryDate"}),
@@ -100,6 +146,7 @@ RECEIPT = DocTypeSpec(
     # Receipts use txnDate where invoices use issueDate.
     date_leaves=frozenset({"txnDate", "serviceDate"}),
     excluded_leaves=_COMMON_EXCLUDED,
+    contained_leaves=frozenset({"name"}),
     # ReceiptTotals.subtotal, .taxes and .otherCharges are LISTS on receipts where the invoice
     # equivalents are scalars. That is the single biggest structural difference between the two
     # types and the thing most likely to break a naive port.

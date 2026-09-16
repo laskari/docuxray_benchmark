@@ -30,3 +30,18 @@ _to_delete/
 # Built ground truth (17MB, regenerable like gt/fatura.jsonl). The path moved into a
 # per-dataset subdirectory; the old flat pattern silently stopped matching.
 gt/invoice/fatura/ground_truth.jsonl
+
+# Built ground truth for the newer datasets (same rule as gt/invoice/fatura above:
+# large and regenerable via scripts/build_gt.py). Manifests and coverage stay tracked.
+gt/invoice/fatura_verbatim/ground_truth.jsonl
+gt/_backup_*/
+
+# Scratch probes and instrumentation spikes written during scoring investigations
+_*.py
+!__init__.py
+_cells.json
+*.bak
+*.bak2
+
+# Long-form article drafts kept locally, not part of the harness
+Claude outputs/

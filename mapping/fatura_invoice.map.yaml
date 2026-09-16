@@ -135,7 +135,7 @@ mappings:
     confidence: high
     coverage: 6200
     review: accepted   # Naveen, 2026-09-01
-    targets: [{path: parties.customer.phone, parser: phone_normalise}]
+    targets: [{path: parties.customer.phone, parser: phone_verbatim}]
     absence_authoritative: true
     collision: see party_role_policy
 
@@ -148,7 +148,7 @@ mappings:
     targets:
       - {path: parties.shipTo.name,  parser: passthrough_strip, from: SEND_TO.Name}
       - {path: parties.shipTo.email, parser: passthrough_strip, from: SEND_TO.Email}
-      - {path: parties.shipTo.phone, parser: phone_normalise,   from: SEND_TO.Tel}
+      - {path: parties.shipTo.phone, parser: phone_verbatim,   from: SEND_TO.Tel}
     absence_authoritative: true
 
   - label: DISCOUNT
@@ -192,6 +192,58 @@ mappings:
       prompts extract verbatim printed values and explicitly forbid summing ("DO NOT calculate,
       infer, or sum individual tax line items" — total.py:189).
 
+  - label: "MULTI-RATE TAX  [GST(n%) x2+, or GST(n%) + TAX]"
+    labels: []                   # declares NO new source label: this row adds a TARGET fed by
+                                 # labels the GST(n%) and TAX rows already declare. The contract
+                                 # check compares label tokens, so re-declaring them here would
+                                 # duplicate ownership of a label.
+    status: mapped
+    scoring: deferred            # GT written; comparison not yet wired -- see note
+    confidence: high
+    coverage: 400
+    review: accepted   # Naveen, 2026-09-10
+    targets:
+      - {path: totals.otherCharges, parser: tax_lines}
+    prediction_sources:
+      - totals.otherCharges
+      - totals.taxName
+      - totals.taxPercentage
+      - totals.taxAmount
+    match_rule: keyed_list
+    match_key: rate_from_key
+    headline_eligible: false
+    headline_bar_reason: >
+      2 templates / 400 documents, and a keyed list scored per line. The diversity bar passes it
+      (amounts differ per document) but the pattern does not. Coverage and regression only.
+    absence_authoritative: true
+    note: >
+      Template25 prints five simultaneous GST lines; Template29 prints a VAT line AND a GST line.
+      InvoiceData.Totals holds ONE taxName / taxPercentage / taxAmount, so those three paths stay
+      EXCLUDED on these 400 documents -- filling them means choosing one of five rates by fiat.
+      The printed lines are still facts, and they are now written to totals.otherCharges, whose
+      own schema description names "Tax" as an example of a document-level modifier.
+
+      MATCHING RULE (stated because the naive version scores ~0%): compare the RATE EXTRACTED
+      FROM THE KEY, never the key string. GT writes 'GST(18%)' / 'VAT(5.99%)'; the pipeline emits
+      'GST(18%)' and 'TAX:VAT (5.99%)'. Values compare as numbers at 2dp, as everywhere else.
+
+      PREDICTION SOURCES ARE A UNION, for a measured reason: on Template29 the pipeline splits the
+      two taxes, sending GST to otherCharges and VAT to the scalar triple (emitted on 24 of 40
+      sampled documents, always equal to one printed line, never their sum). Scored against
+      otherCharges alone Template29 recovers 66.25%; against the union, 96.25% -- and Template25 is
+      95.00% either way. Same merged-target pattern as addressStructured.
+
+      MEASURED on s42_main2000 before wiring, 280 printed lines in the sample / 1,400 in the corpus:
+      RAW 76.43%, RAW_POSTPROCESSED 76.43%, FINAL 95.36% (precision 95.29%, and 95.00% of documents
+      recover every line). The +18.9 pp step is the largest single unreported judge contribution in
+      the benchmark.
+
+      SCORING IS DEFERRED, and the ground truth is inert until it is wired: totals.otherCharges is
+      not a leaf in schema/invoice_leaf_paths.tsv, so load_rule_registry gives it no rule and
+      score_document skips it; score_document_lists needs meta.row_targets['totals.otherCharges'],
+      which nothing sets. Verified by re-scoring s42_main2000 after the ground-truth change: 0
+      difference in any arm, any field, any headline figure.
+
   - label: SUB_TOTAL
     labels: [SUB_TOTAL]
     status: mapped
@@ -209,7 +261,10 @@ mappings:
     label_regex: "^GST\\(\\s*(?P<rate>\\d+(?:\\.\\d+)?)\\s*%\\)$"
     status: mapped
     confidence: MEDIUM        # <-- arguable, see review sheet Q3
-    coverage: 1800
+    coverage: 800             # documents THIS row governs: a single GST rate and no TAX label.
+                              # 1,200 documents carry a GST(n%) key in all (6 templates); the
+                              # other 400 print several tax lines and belong to the MULTI-RATE
+                              # TAX row above. Recounted 2026-09-11 (was 1800, unsourced).
     review: accepted   # Naveen, 2026-09-01
     targets:
       - {path: totals.taxName,                     parser: literal, value: "GST"}
@@ -274,7 +329,7 @@ mappings:
     targets:
       - {path: parties.customer.name,  parser: passthrough_strip, from: BILL_TO.Name}
       - {path: parties.customer.email, parser: passthrough_strip, from: BILL_TO.Email}
-      - {path: parties.customer.phone, parser: phone_normalise,   from: BILL_TO.Tel}
+      - {path: parties.customer.phone, parser: phone_verbatim,   from: BILL_TO.Tel}
     absence_authoritative: true
     collision: see party_role_policy
     note: >
@@ -302,11 +357,12 @@ mappings:
 
   - label: NOTE
     labels: [NOTE]
-    status: mapped
+    status: unmapped
+    reason: IGNORED_BY_USER_REQUEST
     confidence: high          # RESOLVED 2026-09-01, see note_policy
     coverage: 5200
     review: accepted   # Naveen + Sandeep, 2026-09-01
-    targets: [{path: invoiceInfo.noteText, parser: passthrough_strip, match: token_recall_0.9_merged}]
+    # targets: [{path: invoiceInfo.noteText, parser: passthrough_strip, match: token_recall_0.9_merged}]
     absence_authoritative: true
     effective_n: 5
     headline_eligible: false
@@ -325,7 +381,10 @@ mappings:
     labels: [SELLER.Site, BUYER.Site, BILL_TO.Site, SEND_TO.Site]
     status: unmapped
     reason: SCHEMA_GAP
-    coverage: 10000 / 6200 / 1600 / 1800
+    coverage: 1400 / 6200 / 1600 / 1800   # non-null documents per label. SELLER.Site was
+                                          # recorded as 10000, which is how often the key is
+                                          # PRESENT; it holds a value on 1,400. Recounted
+                                          # 2026-09-11.
     review: accepted   # Naveen, 2026-09-01
     note: >
       Party has name, addressStructured, phone, email — there is NO website field anywhere in
@@ -455,13 +514,13 @@ not_annotated:
     - parties.*.addressStructured.country
     - invoiceInfo.customerNumber
     - invoiceInfo.paymentTerms.raw_text
+    - invoiceInfo.noteText
+    - invoiceInfo.customerMemo
     - invoiceInfo.paymentTerms.term_type
     - invoiceInfo.paymentTerms.due_days
     - invoiceInfo.paymentTerms.day_of_month_due
     - invoiceInfo.category             # subjective; report separately per Benchmarking_plan 4.3
     - invoiceInfo.categoryReasoning    # free text, no GT
-    - totals.otherCharges[].key
-    - totals.otherCharges[].value
     - totals.deposit
     - totals.previousUnpaidBalances
     - totals.postPaymentRemainingCurrentBalance
@@ -502,13 +561,31 @@ address_policy:
   decision: |
     Q2 RESOLVED 2026-09-01 (Naveen): MERGE the model's addressStructured sub-fields
     (address, city, state, postal_code, country -- in that order) into a single string and
-    compare it against the whole GT block at ANLS >= 0.8, punctuation-insensitive on both sides.
+    compare it against the whole GT block. (SUPERSEDED 2026-09-09 by contract 1.7: the ANLS >= 0.8
+    tier is gone -- the merged string must EQUAL the block after separator normalisation. The merge
+    exists so the model is not scored on which component it filed a token in; it was never a
+    licence to forgive the tokens themselves, and 'us' vs 'USA' is a mismatch.)
     The target path is therefore the OBJECT `parties.<role>.addressStructured`, not the
     `.address` leaf, and the five components are CONSUMED by the merge rather than marked
     not-annotated. A model that correctly routes the city into `city` is neither rewarded nor
     punished for the split; only the address content is scored.
-    Punctuation is dropped because the merge inserts commas the printed block does not have --
-    a formatting artifact of the merge, not a difference in the address.
+    JOIN RULE AMENDED 2026-09-09 (Naveen): the five components are joined on a SINGLE SPACE,
+    not on ', '. The comma join inserted separators the comparison then had to remove again;
+    whitespace adds nothing of its own, so the model is never scored against a rendering
+    convention this benchmark invented. Punctuation is STILL dropped on both sides, and the
+    reason is now stated correctly: the PRINTED block separates city from state with a comma
+    ('Tammyland, SD 42587 US') that a component split cannot reproduce. That comma is a
+    rendering convention of the page, not a fact about the address. Measured on s42_main2000:
+    retaining punctuation scores 0.00% exact on all 3,840 address comparisons, while the space
+    join is verdict-identical to the old comma join (0 changes, every arm and field).
+    PUNCTUATION SET NARROWED 2026-09-09 (Naveen): the comparison collapses ',' ';' '.' only,
+    not every non-word character as before. The old rule was broader than its justification --
+    only SEPARATORS are unreproducible by a component merge -- and it silently equated
+    "1851-a" with "1851 a". '-', '/', '#', '&' and brackets are now preserved on both sides.
+    Verdict-identical on FATURA (0 changes, every arm and field), because FATURA addresses
+    contain no punctuation but ',' and '.'; on SROIE 448 of 625 GT addresses carry a character
+    the old rule destroyed, so this is a real tightening for the next dataset, not a cosmetic
+    one. See core.normalize.normalise_address_compare.
   superseded_proposal: |
     GT gives one multi-line block ('16424 Timothy Mission\nMarkville, AK 58294 US').
     The schema splits it into address / city / state / postal_code / country.
@@ -555,15 +632,30 @@ numeric_value_policy:
     The value is read with normalize.numeric_from_field(), whose source is set by
     normalize.NUMERIC_SOURCE.
 
-    NUMERIC_SOURCE = "originalValue"  (the decision, 2026-09-01)
+    NUMERIC_SOURCE = "normalizedValue"  (the decision, 2026-09-04; was "originalValue")
 
     Why originalValue and not normalizedValue:
-      * It is present at EVERY stage. normalizedValue exists only after postprocessing, so
-        pinning to it would score bare extraction as zero on every amount -- a wire-format
-        artifact, not
-        a fact about the model.
-      * The postprocessor only .strip()s originalValue, so RAW and FINAL are scored on the
-        IDENTICAL field. Any arm-to-arm difference is therefore a real pipeline difference.
+      SUPERSEDED 2026-09-04 -- both bullets below turned out to be wrong, and the evidence
+      is recorded here rather than deleted, because the reasoning failed in an instructive way:
+
+      * "normalizedValue exists only after postprocessing, so pinning to it would score bare
+        extraction as zero." FALSE in effect: numeric_from_field FALLS BACK to the other key
+        when the preferred one is missing, so the RAW arm -- where the model emits only
+        originalValue -- reads originalValue and scores normally. The objection described
+        pinning, but the implementation never pinned.
+      * "The postprocessor only .strip()s originalValue, so RAW and FINAL are scored on the
+        IDENTICAL field." FALSE outright. ai/postprocessing/invoice_postprocessor.py
+        _normalize_totals REWRITES discountTotal's originalValue from "9.93" to "(-) 9.93"
+        while setting normalizedValue to 9.93. Ground truth stores discount as a positive
+        magnitude (money_abs), so reading originalValue scored FINAL 0/13 on a field RAW
+        scored 12/13 -- a fabricated 100% regression, of exactly the same species as the
+        retracted "the judge reverts normalisation" finding.
+
+      The rule now reads normalizedValue first and falls back to originalValue. Measured
+      across the 51-document probe, totals.discountTotal in FINAL is the ONLY path where the
+      two keys disagree; every other numeric is unchanged, and DOCILE's 100 documents moved
+      not at all. value_source is published per row so any arm difference can be checked
+      against which key was actually read.
       * It is the verbatim printed string, which is what the ground truth also records. The
         two sides are the same kind of evidence.
       * FATURA's amounts are unambiguous ('1,098.21 USD' -- comma thousands, dot decimal), so
@@ -751,7 +843,19 @@ statistics_policy:
     identically 200x each), all GSTIN variants, and NOTE.
 
 CHANGELOG:
+  - {version: "1.11", date: 2026-09-11, by: naveen, change: "CONVENTION-ADJUSTED CRITERION added, published BESIDE exact as an equal partner -- two criteria answering two questions, the way 5.3 already frames literal vs exact. EXACT: does the output match the document? CONVENTION-ADJUSTED: did the pipeline READ the document correctly? Same denominators, so the gap between them is the numerator and nothing else. That gap is a CLOSED, ENUMERATED list of TWO notations, each measured before admission: (A) a printed currency symbol against the ISO code for it -- 594 instances per arm, every one of them $ against USD, chosen as USD SPECIFICALLY rather than any symbol-compatible code (Naveen); (B) a country written long against the printed form -- us vs usa, 103/103/99. Nothing else is in the list and additions need a CHANGELOG entry. It forgives NO misreading: an email domain, a transposed phone or invoice digit, a dropped state code, a misread street and text glued onto a name are all still wrong, which is the point. The address rule compares token SEQUENCES with the country swapped back, so a country difference plus any second difference fails. THIS IS NOT THE LENIENT CRITERION RETIRED IN 1.7: that one passed an address at ANLS >= 0.9 and would have forgiven a misread token; this one forgives two named notations and cannot forgive a misreading. Results on s42_main2000 -- micro RAW 96.229 -> 98.718%, RAW+norm 96.707 -> 99.196%, FINAL 96.904 -> 99.379%; headline 98.184 -> 98.592%, 98.714 -> 99.122%, 98.968 -> 99.359%. Exactly four fields move and no others: currency 67.72 -> 100.00% (every currency error in the benchmark is notation, none is a misreading) and the three addresses. Exact figures verified BYTE-IDENTICAL after the change in every arm, field, state and interval. Opt-in per doc type (doctypes.convention_criterion); CORD re-scores identical once the new null-valued keys are removed. Also fixed while here: score_document read `if res` where it meant `if res is not None` -- MatchResult defines __bool__ as its own verdict, so the fallback branch was taken for every MISS. Harmless on score/exact, which agree with the fallback on a miss; it silently zeroed the convention verdict, which exists to differ there."}
+  - {version: 1.10.2, date: 2026-09-11, by: naveen, change: "AUDIT of the eight key-coverage counts, every one recomputed from source. All eight reproduce: 35 distinct annotation keys in FATURA Annotations/ (10,000 files), 41 labels in this map inventory, 25 mapped, 16 not mapped; 72 schema leaves, 39 reached through 26 targets (22 scalar + 3 addresses x 5 + 1 list x 2), 33 outside, and the map 26 targets are identical to coverage.json 26 scoreable paths. Two DOCUMENTATION fields were wrong and are corrected -- no scored number depends on either. (a) the GST(n%) row said coverage 1800; it governs the 800 SINGLE-rate documents, the corpus has 1,200 GST documents across 6 templates, and the other 400 (Template25, Template29) belong to the MULTI-RATE TAX row. (b) SELLER.Site said 10000, which is key PRESENCE; it holds a value on 1,400. Every other coverage figure in the file was verified against a non-null recount of all 10,000 annotation files and is correct."}
+  - {version: 1.10.1, date: 2026-09-11, by: naveen, change: "HOUSEKEEPING, no scoring effect. The not_annotated block still listed totals.otherCharges[].key and [].value, which contract 1.8 annotated and 1.9 scores -- the map contradicted itself in two places. Removed; the block now lists 27 paths. Verified against the schema leaf file: the map reaches 39 of 72 leaves through 26 targets, and coverage.json lists exactly those 26."}
+  - {version: "1.10", date: 2026-09-11, by: naveen, change: "CHARGE LABEL compared as its TWO FACTS, not as one string. A charge row key prints a charge name and a rate together ('TAX:VAT (5.99%)'); the ground truth stores a CONSTRUCTED canonical form ('VAT(5.99%)'). Comparing those strings measured which rendering the model chose, not what it read: on s42_main2000, 84 of 708 matched rows differed as strings and every one of the 84 named the RIGHT TAX at the RIGHT RATE -- the differences were a 'TAX:' column caption, a trailing colon, a space before the parenthesis, and '6.5%' against '6.50%'. New MatchRule.CHARGE_LABEL compares the name exactly and the rate as a number at 2dp after both sides shed that scaffolding -- exact-after-normalisation on both sides, the same shape of rule as the address separator set (1.7) and the amount 2dp rule. It still fails what should fail: one document writing a comma-joined 'GST, VAT' is a miss. Declared per doc type as WHOLE LEAF PATHS (charge_label_paths), because 'key' is also CORD's and DOCILE's line-item caption leaf -- verified by re-scoring cord_test_main_100 and cord_smoke to byte-identical results.json. Effect on totals.otherCharges [].key: RAW 86.05 -> 99.53%, RAW+norm 86.45 -> 100.00%, FINAL 91.04 -> 100.00%; row-exact FINAL 87.10 -> 95.70%, table-exact 70.00 -> 95.00%. Row alignment, row recall, row precision and [].value are unchanged, and the scalar metric is byte-identical (25 keys, FINAL micro 96.904%, headline 98.968%)."}
+  - {version: 1.9, date: 2026-09-11, by: naveen, change: "MULTI-RATE TAX SCORING WIRED -- the comparison 1.8 deferred. totals.otherCharges is now a scored repeated section on the 400 multi-rate documents, reported on its own terms (row recall, row precision, per-cell accuracy, row-exact, table-exact) and NEVER folded into the scalar field denominator. Rows are paired on the RATE taken from either side's key, matched EXACTLY: a tax line's identity is its printed rate, which is unique within every one of the 400 documents, and pairing on anything looser risks answering the 1% ground-truth line with the 18% predicted entry. Added as an OPT-IN alignment mode (doctypes.rate_keyed_lists) so CORD and DOCILE keep the text alignment they were measured under -- instrumented over the real scorer, CORD enters the exact-key path 0 of 75 calls and s42_main2000 enters it 240 of 240, and text-similarity pairing fires on 0 of 708 matched rows because FATURA annotates no non-tax charge. Prediction side is the UNION of the list and the scalar tax triple (doctypes.list_union_sources), as 1.8 specified: Template29 scores 66.25% against the list alone and 96.25% against the union. Results on s42_main2000 (80 documents, 280 printed tax lines): row recall RAW 76.79% / RAW+norm 76.43% / FINAL 99.64%, row precision 100.00% in every arm. Scalar metric verified untouched -- byte-identical micro, headline, macro, CI, null rate, hallucinations and per-field figures across all three arms. Still HEADLINE-BARRED (1.8)."}
   - {version: 0.1-draft, date: 2026-09-01, by: claude, change: "Initial blind draft from schema descriptions + corpus statistics. No model output inspected."}
+  - {version: 1.8, date: 2026-09-10, by: naveen, change: "MULTI-RATE TAX mapped. The 400 documents that print more than one tax line (Template25: five GST rates; Template29: VAT + GST) now carry those lines in the ground truth as totals.otherCharges, a keyed list in the schema own shape. The three SCALAR tax paths remain excluded on those documents -- the fix is a different target SHAPE, not a wider denominator on the wrong shape (the updated key sheet proposed taking tax from 4,400 to 4,800 documents; measured, that scores 60% or 0% on Template29 depending purely on which printed line the annotator picks). Matching compares the RATE EXTRACTED FROM THE KEY, and the prediction side is the UNION of otherCharges and the scalar triple because the pipeline splits Template29 across both. Headline-BARRED by decision, enforced by a new HEADLINE_BARRED override in scripts/build_gt.py that also writes headline_bar_reason into coverage.json. SCORING DEFERRED at Naveen request: the ground truth is stored now, the comparison is wired later. Verified inert -- s42_main2000 re-scored after the rebuild with 0 difference in any arm, field or headline; coverage.json moves 25 -> 26 scoreable paths with headline-eligible unchanged at 23."}
+  - {version: 1.7, date: 2026-09-09, by: naveen, change: "ADDRESS is now compared EXACTLY too, so no headline-eligible key consults a similarity threshold and the LENIENT CRITERION IS RETIRED -- exact and lenient are identical everywhere, verified by re-scoring s42_main2000 under match_policy exact, threshold@0.8 and threshold@0.9 and getting byte-identical arm figures. Naveen: 'other than , . ; any other character difference also considered to be error only, lenient score means only normalizing on these characters', and explicitly 'us vs USA also considered to be mismatch only'. Normalisation for an address is the SEPARATOR set and nothing more; the merge exists so the model is not scored on which component it filed a token in, never to forgive the tokens. No published number moves (FINAL micro 96.904%, headline 98.968%) because addresses were already exact under the exact policy -- what changes is that the softer companion column no longer exists. The 99 USA-for-us instances it used to forgive are now counted as errors and reported as the benchmark most actionable finding: fixing that one class alone would take FINAL to 97.257% micro / 99.359% headline. ANLS_THRESHOLD and match_policy remain live only for TEXT_CONTAINED (noteText, headline-barred) and the ad-hoc probes in scripts/."}
+  - {version: 1.6, date: 2026-09-09, by: naveen, change: "TEXT rule (the three party names and totals.taxName) is now compared EXACTLY under BOTH criteria -- the lenient/threshold policy can no longer loosen it, and the lenient criterion therefore applies to the three party ADDRESSES and nothing else. Naveen: parties.customer.name and parties.seller.name should be ignored from lenient match and compared exact after case normalisation. Rationale: a name is an identity, so a near miss is a miss. The ANLS score is still computed and reported so a miss can be shown as a near miss; it just no longer decides the verdict. Scope: restricting the whole TEXT rule is measured to be IDENTICAL to restricting only those two keys -- parties.shipTo.name and totals.taxName never passed on similarity alone, at either bar, in any arm -- so the rule states the principle at no cost. EXACT criterion completely unchanged (micro 96.229/96.707/96.904, headline 98.184/98.714/98.968, judge 172/117/+55). LENIENT moves only in FINAL: micro 97.361% -> 97.350%, headline 99.474% -> 99.462%, delta over exact +0.457 -> +0.446 pp; RAW and RAW_PP unchanged. The exact-fail/lenient-pass population drops from 130 to 126 rows, all three of them addresses, 125 above the 0.90 bar."}
+  - {version: 1.5, date: 2026-09-09, by: naveen, change: "PHONE comparison: whitespace is removed and NOTHING else. Naveen: 'for any phone numbers only the white space should be collapsed, nothing to be removed such as (, ), -, /'. The old rule reduced both sides to digits with a leading +, which asked 'did the model read the right number?'; since rule 1.2 the ground truth stores the printed number verbatim, so the stricter and more useful question is 'did the model reproduce what is printed?'. Whitespace is REMOVED rather than collapsed to one space, because a space inside a phone number carries no information (+ (127)320-2529 == +(127)320-2529). NOT verdict-neutral, and this is the measured cost on s42_main2000 (1,840 phone instances per arm): RAW and RAW_PP fall 98.86% -> 98.64% on phones (micro 96.243% -> 96.229%, headline 98.200% -> 98.184%), FINAL is UNCHANGED at 99.46% / micro 96.904% / headline 98.968%. Four field instances flip, eight arm-rows, every one a real difference from the page: +385)112-2765 and +477)997-7393 drop the opening bracket, +382204-7062 drops both, +9236726899 reformats as bare digits. The judge line moves with the baseline: fixed 168 -> 172, net +51 -> +55, harmed unchanged at 117. core.normalize.normalise_phone (digits) is retained for the strict-ladder scripts."}
+  - {version: 1.4, date: 2026-09-09, by: naveen, change: "ADDRESS comparison: the punctuation collapsed on both sides is now the SEPARATOR SET ',' ';' '.' only, not every non-word character. Naveen: in expressing an address, characters like '-', '/' and '#' should not be removed. Correct -- the old rule was broader than its own justification, which covers only the separators a component merge cannot reproduce, and it made 'lot 1851-a' and 'lot 1851 a' the same address. Verdict-identical on FATURA (s42_main2000 re-scored end to end, 0 changes in any arm or field) because FATURA addresses carry no punctuation but ',' and '.'. Not cosmetic generally: 448 of the 625 SROIE ground-truth addresses contain a character the old rule destroyed."}
+  - {version: 1.3, date: 2026-09-09, by: naveen, change: "ADDRESS comparison: the model's five addressStructured components are now joined on WHITESPACE instead of ', '. The comma join inserted separators that the comparison then removed again; whitespace adds nothing of its own, so the model is never scored against a rendering convention the benchmark invented. Punctuation is still dropped on both sides, because the PRINTED block separates city from state with a comma ('Tammyland, SD 42587 US') that no component split can reproduce -- retaining punctuation scores 0.00% exact on all 3,840 address comparisons. Verdict-neutral: re-scored s42_main2000 end to end, 0 changes in any arm, any field, any headline. Also fixed merge_address_components ignoring its alt_order argument, so the alternate component order (address, postal_code, city, state, country) is now genuinely tried; it wins 0 comparisons on FATURA."}
+  - {version: 1.2, date: 2026-09-09, by: naveen, change: "Two ground-truth value rules changed. (1) PHONES are stored AS PRINTED (parser phone_verbatim): the scorer reduces both sides to digits at comparison time, so this is number-neutral -- verified on 1,838 phone rows with zero verdict changes -- and the ground truth now holds what the page shows. (2) CURRENCY: when no ISO code is printed anywhere on the document, the printed SYMBOL is stored instead of excluding the field. The previous rule dropped 3,071 documents from the currency denominator. This one is NOT number-neutral: the pipeline emits an ISO code on those pages, so it scores 0 against a stored '$', and the gap is published rather than hidden."}
   - {version: 0.1.1-draft, date: 2026-09-01, by: claude, change: "Added a machine-readable `labels:` list (and `label_regex` for the GST row) to every mapping row. The prose `label:` field stays as the human-facing name. No mapping semantics changed \u2014 this exists so adapters/fatura.py::check_against_yaml can verify the code has not drifted from the reviewed contract."}
   - {version: 0.1.2-draft, date: 2026-09-01, by: claude, change: "Added the BILL_TO.Name/.Email/.Tel row. adapters/fatura.py resolves BILL_TO to parties.customer when BUYER is absent (1400 files), but the map never named those three labels — check_against_yaml caught the omission. Mapping behaviour unchanged; the contract now states it."}
   - {version: 0.1.3-draft, date: 2026-09-01, by: claude, change: "Numeric target paths changed from X.originalValue to the logical path X, and numeric_value_policy added. Reason: a real pipeline output showed NumericValue carrying BOTH originalValue and normalizedValue. new_schema.py declares only originalValue because that is what the MODEL emits; ai/postprocessing/_common.py adds normalizedValue afterwards. Scoring a fixed sub-key would have zeroed arm A on every numeric. Values are now read with an accessor mirroring production's _extract_float."}
@@ -762,3 +866,4 @@ CHANGELOG:
   - {version: 1.0-rc5, date: 2026-09-01, by: naveen, change: "frozen_system_policy added: backend, ai_backend, schema and all prompts are FROZEN; the shipped system is measured as-is. The Totals.taxes list change is withdrawn. The four schema gaps become permanent published limitations rather than pending fixes. The earlier edit to tests/eval/scoring.py has been reverted to HEAD."}
   - {version: 1.0-frozen, date: 2026-09-01, by: naveen+sandeep, change: "NOTE resolved: compared against paymentTerms.raw_text + customerMemo MERGED with token-recall 0.9, because the model routes note text by content and splits a mixed NOTE across both fields -- neither single target is correct. ALL 29 ROWS NOW ACCEPTED. Reviewers: Naveen Kumar, Sandeep. The contract is frozen; further changes require a new CHANGELOG entry and both signatures."}
   - {version: 1.0-frozen, date: 2026-09-02, by: claude, change: "NOMENCLATURE ONLY. The harness collapsed four cumulative arms (A/B/C/D) to the two states production actually persists: RAW = extraction + extraction_postprocessing = pages.$.extraction_postprocessing_result = the judge input, and FINAL = RAW + judge + refinement + postprocessing = pages.$.postprocessing_result = the shipped output. Prose in this map was updated to the new names. NO mapping row, target path, parser, match rule, absence_authoritative flag or policy decision changed; the frozen contract and its two signatures stand. Note for readers of any RAW->FINAL number: that gap spans judge + refinement + postprocessing together and does not attribute to the judge alone. The judge detector matrix does, because RAW is exactly its input."}
+  - {version: 1.1-pending-signature, date: 2026-09-04, by: claude, change: "THREE SCORING DEFECTS FOUND IN NAVEEN'S MANUAL REVIEW, all confirmed against runs/probe (51 docs) and runs/docile_main (100 docs). (1) NUMERIC_SOURCE originalValue -> normalizedValue. The invoice postprocessor rewrites discountTotal originalValue to '(-) 9.93' while normalizedValue holds 9.93; GT stores positive magnitude, so FINAL scored 0/13 where RAW scored 12/13. Only discountTotal-in-FINAL is affected; all other numerics and all of DOCILE are unchanged. numeric_from_field already falls back, so RAW is not zeroed. (2) The emitted predicate tested str(pred).strip() != \"\", and str({}) is non-empty, so an addressStructured with all five components null counted as an EMISSION -- 9 false hallucinations per arm on the probe. Replaced with normalize.is_emitted(), which recurses and treats an all-null object, {}, [] and whitespace as no answer. (3) The review sheet rendered GT-absent as the literal text <<GT says absent>> against a model {} , which read as a disagreement where the harness scored a correct null. Both sides now render blank; the RAW?/FINAL? verdict columns still carry the semantics. NET EFFECT on the probe: FINAL micro_recall 97.5% -> 99.3%, RAW unchanged at 98.2%, hallucinations 14 -> 5 in both arms. The 5 that remain are genuine (seller.name emitting C9, LCO, HHIGH, LESR, and Thompson and Sons). NO mapping row, target path or parser changed. (4) A present-but-null normalizedValue was being rescued from originalValue, so a field production computed, rejected and shipped as null scored CORRECT. totals.taxPercentage read 100% in FINAL while 16 of 51 documents shipped null (refinement rewrites the field to \"(4.65%)\"; _normalize_numeric_value reads the parens as negation; -4.65 fails the [0,100] check and the field is nulled). numeric_from_field now distinguishes a MISSING key (RAW has no normalizedValue -- fall back) from a key PRESENT AND NULL (the product decided -- that is the answer). Such a row scores MISSING, not WRONG, because the pipeline dropped the value rather than misreading it (Naveen, 2026-09-04). FINAL taxPercentage 100% -> 34.8%. NET on the probe: FINAL micro_recall 97.5% -> 97.3%, RAW 98.2% unchanged, hallucinations 14 -> 5 in both arms; DOCILE 100 documents unchanged at 85.6%. Three of the four fixes raise the number and one lowers it, which is what a correctness pass should look like. REQUIRES the second signature (Sandeep) before the main run, per the 1.0-frozen entry."}

@@ -1,5 +1,5 @@
 {
-  "dataset": "fatura",
+  "dataset": "fatura_verbatim",
   "doc_type": "invoice",
   "n_docs": 1000,
   "n_templates": 50,

@@ -79,9 +79,12 @@ def main() -> int:
     smoke.extend(d for d in entry.extra_smoke_docs if d in known and d not in smoke)
     pilot = sorted(mid(v) for v in by_keyset.values())
     rng = random.Random(a.seed)
-    main_plan = sorted(d for c in sorted(by_cluster)
-                       for d in rng.sample(sorted(by_cluster[c]),
-                                           min(a.instances_per_cluster, len(by_cluster[c]))))
+    main_plan = []
+    for c in sorted(by_cluster):
+        cluster_docs = sorted(by_cluster[c])
+        rng.shuffle(cluster_docs)
+        main_plan.extend(cluster_docs[:a.instances_per_cluster])
+    main_plan.sort()
 
     index = {r.doc_id: r for r in records}
     for name, ids, meta in (

@@ -38,6 +38,18 @@ from registry import dataset_for, gt_dir as _gt_dir                # noqa: E402
 
 # A rate published as a headline needs enough support to mean anything, and enough VARIETY
 # that it is not one value repeated. Both bars are stated here rather than left to the reader.
+# Paths barred from the headline by DECISION, not by the diversity bar below. The bar is a
+# statistical test; this is a judgement the test cannot make. Each entry states its reason,
+# which is written into coverage.json as headline_bar_reason so the report can print it.
+HEADLINE_BARRED = {
+    "totals.otherCharges": (
+        "multi-rate tax lines on 2 templates / 400 documents. The diversity bar passes it "
+        "(the amounts differ per document) but the PATTERN does not: two layouts, and a keyed "
+        "list scored per line rather than per document. A coverage and regression row, never a "
+        "performance claim. Decided 2026-09-10 (Naveen), map contract 1.8."
+    ),
+}
+
 MIN_DOCS_FOR_HEADLINE = 30
 MIN_DISTINCT_FOR_HEADLINE = 20
 
@@ -59,14 +71,20 @@ def main(argv=None) -> int:
                     help="required when the doc type has more than one dataset")
     ap.add_argument("--pilot-size", type=int, default=10,
                     help="documents in the pilot plan (the hand-adjudication set)")
-    ap.add_argument("--seed", type=int, default=20260903)
+    ap.add_argument("--seed", type=int, default=42)
     ap.add_argument("--skip-image-check", action="store_true",
                     help="build ground truth without verifying every image is present")
+    ap.add_argument("--root", default=None,
+                    help="override the dataset root from config.yaml. The config paths are "
+                         "RELATIVE so the same checkout works on macOS and in the sandbox, but "
+                         "a sandbox that mounts the dataset somewhere else entirely needs this. "
+                         "Recorded in coverage.json so a build can never be mistaken for one "
+                         "made against the configured root.")
     a = ap.parse_args(argv)
 
     spec = doctypes.get(a.doc_type)
     entry = dataset_for(spec.name, a.dataset)
-    adapter = entry.load()
+    adapter = entry.load(a.root)
     out_dir = _gt_dir(spec.name, entry.name)
     out_dir.mkdir(parents=True, exist_ok=True)
 
@@ -129,9 +147,11 @@ def main(argv=None) -> int:
             "n_clusters": len(by_path_clusters[p]),
             "distinct_gt_values": distinct,
             "absent_docs": absent_docs[p],
-            "headline_eligible": bool(n_docs >= MIN_DOCS_FOR_HEADLINE
+            "headline_eligible": bool(p not in HEADLINE_BARRED
+                                      and n_docs >= MIN_DOCS_FOR_HEADLINE
                                       and distinct >= MIN_DISTINCT_FOR_HEADLINE
                                       and not constant),
+            "headline_bar_reason": HEADLINE_BARRED.get(p),
             "constant_across_clusters": constant,
         })
 
@@ -139,6 +159,8 @@ def main(argv=None) -> int:
     keysets = collections.Counter(r.keyset_id for r in records)
     coverage = {
         "dataset": entry.name, "doc_type": spec.name,
+        "dataset_root": str(adapter.root),
+        "root_overridden": bool(a.root),
         "n_docs": len(records), "n_clusters": len(clusters), "n_keysets": len(keysets),
         "n_gt_line_item_rows": n_rows,
         "scoreable_paths": len(paths),
@@ -204,11 +226,26 @@ def main(argv=None) -> int:
                 pilot.append(doc)
     pilot = sorted(pilot)
 
-    full = sorted(r.doc_id for r in records) if natural else sorted(
-        d for c in sorted(by_cluster) for d in rng.sample(sorted(by_cluster[c]),
-                                                          min(20, len(by_cluster[c]))))
+    if natural:
+        full = sorted(r.doc_id for r in records)
+    else:
+        full = []
+        for c in sorted(by_cluster):
+            cluster_docs = sorted(by_cluster[c])
+            rng.shuffle(cluster_docs)
+            full.extend(cluster_docs[:20])
+        full.sort()
+
+    known = {r.doc_id for r in records}
+    smoke = sorted(sorted(v)[1] if len(v) > 1 else sorted(v)[0] for v in by_cluster.values())
+    if hasattr(entry, "extra_smoke_docs"):
+        smoke.extend(d for d in entry.extra_smoke_docs if d in known and d not in smoke)
+    smoke = sorted(list(set(smoke)))
 
     plans = [
+        ("smoke_51" if len(smoke) == 51 else f"smoke_{len(smoke)}", smoke, {
+            "purpose": "verification gate, not a measurement",
+            "selection": "one document per cluster (not the first — see the header)"}),
         (f"pilot_{len(pilot)}", pilot, {
             "purpose": "verification gate and the hand-adjudication set — not a measurement",
             "selection": "one document per distinct key-set, then filled by line-item table "
