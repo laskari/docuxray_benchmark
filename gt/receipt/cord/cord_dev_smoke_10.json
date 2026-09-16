@@ -1,0 +1,30 @@
+{
+  "dataset": "cord",
+  "doc_type": "receipt",
+  "split": "dev",
+  "n_docs": 10,
+  "n_templates": 10,
+  "n_gt_rows": 37,
+  "purpose": "wiring gate, not a measurement",
+  "selection": "10 of 100 dev documents, round-robin across line-item table size (none/single/small/medium/large), seed 20260907",
+  "seed": 20260907,
+  "strata": {
+    "small": 3,
+    "medium": 3,
+    "large": 1,
+    "single": 3
+  },
+  "excluded_from": null,
+  "doc_ids": [
+    "dev-19",
+    "dev-26",
+    "dev-35",
+    "dev-41",
+    "dev-46",
+    "dev-55",
+    "dev-79",
+    "dev-88",
+    "dev-92",
+    "dev-96"
+  ]
+}

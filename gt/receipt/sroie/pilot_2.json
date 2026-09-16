@@ -1,0 +1,14 @@
+{
+  "n_docs": 2,
+  "n_templates": 2,
+  "templates": [
+    "104",
+    "313"
+  ],
+  "purpose": "hand-adjudicate every mismatch",
+  "selection": "one document per distinct key-set (median instance)",
+  "doc_ids": [
+    "104",
+    "313"
+  ]
+}

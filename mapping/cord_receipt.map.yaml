@@ -1,0 +1,532 @@
+# CORD-v2 label -> DocuXray ReceiptData schema path map
+#
+# AUTHORED BLIND: every row below was written from CORD-v2 label semantics (clovaai/cord's
+# published 30-category taxonomy) read against the Field(description=...) text in
+# ai/extraction/new_schema.py. No DocuXray model output was inspected while writing this file.
+# Do not amend a row after seeing scores without recording the change and its reason in
+# CHANGELOG at the bottom.
+#
+# Coverage figures are DOCUMENT counts over all 1,000 CORD-v2 documents (train 800 + dev 100 +
+# test 100), measured from gt_parse. They are recorded so a reader can see which rows can ever
+# clear the headline bar (>= 30 documents and >= 20 distinct values) BEFORE any score exists.
+#
+# status:  mapped | unmapped
+#   mapped   = this label has a home in ReceiptData and is scored
+#   unmapped = CORD annotates it, ReceiptData has no field for it, so it is scored NOWHERE.
+#              Not a defect: it keeps the label visible instead of silently dropped.
+#
+# absence_authoritative:
+#   false everywhere. CORD annotates what the receipt PRINTS; a label's absence means the
+#   annotator did not mark it, which is not the same as the fact being absent from the page.
+#   The corpus therefore licenses NO hallucination denominator, exactly as SROIE does not.
+#
+# Target paths are relative to receiptOutputData.
+#
+# ==========================================================================================
+# TWO CORPORA FROM ONE MAP — value_modes
+# ==========================================================================================
+# CORD publishes STRINGS and never says what they are worth: '24.000', 'Rp 38.000', '@24.000'.
+# Somebody has to decide, so this map is built twice and the label -> status contract below is
+# identical in both. Only the stored VALUE differs, and the two answer different questions:
+#
+#   dataset `cord`           parsed    '24.000' -> 24000.00
+#                            "does the pipeline produce the right AMOUNT?"
+#                            The only mode that can see a normalisation defect, because it is
+#                            the only one holding an opinion about what the digits mean.
+#
+#   dataset `cord_verbatim`  verbatim  '24.000' -> '24.000'
+#                            "does the pipeline TRANSCRIBE what is printed?"
+#                            No interpretation of ours enters the ground truth.
+#
+# THE TRADE IS MEASURED, NOT ASSUMED. In verbatim mode the harness's numeric rule reads GT
+# '24.000' as 24.00 and the product's normalizedValue 24.0 as 24.00, so they MATCH -- a shipped
+# value wrong by a factor of 1000 scores as correct. Same 100 test documents, same predictions:
+#
+#                              FINAL parsed   FINAL verbatim
+#   scalar micro recall            64.9%          91.4%
+#   totals.totalIncludingTax       67.4%          92.6%
+#   lineItems cell accuracy        88.3%          96.4%
+#
+# The GAP between the two columns is the normalisation defect, and it is only visible because
+# both are published. Neither number is the "real" one on its own: verbatim measures the
+# extractor's reading, parsed measures the amount that ships. Report both, always.
+#
+# Why the dot is a thousands separator in `cord` (evidence, not convention):
+#   * 101 corpus values are printed '8.500,00' -- the comma carries two digits and is therefore
+#     the decimal, so the dot cannot be.
+#   * lone-dot values across the corpus: 1,611 have exactly 3 following digits, 143 have 2,
+#     16 have 1. Three minor units does not describe any currency here.
+#   * splitting receipts by printed separator and applying this reading: comma receipts median
+#     total 48,001, dot receipts 39,600 -- the same order. Under the other reading the dot
+#     receipts would be restaurant bills of about 40 rupiah.
+#   * arithmetic CANNOT settle this: scaling every value by 1000 is linear, so
+#     sum(lines)==subtotal holds under both readings. It was not used as evidence.
+
+version: 1.0-draft            # -> 1.0-frozen when two reviewers sign it
+dataset: CORD-v2 (clovaai/cord, naver-clova-ix/cord-v2; 1000 docs = 800 train / 100 dev / 100 test)
+schema_ref: "ai/extraction/new_schema.py :: ReceiptData"
+leaf_paths_ref: schema/receipt_leaf_paths.tsv
+
+# ==========================================================================================
+# WHY THERE IS NO HEADER SECTION IN THIS MAP
+# ==========================================================================================
+header_policy:
+  reason: >
+    CORD's images have the receipt header and footer deliberately blurred to remove PII, and
+    the label taxonomy has no store-name, address, phone, date or document-number category at
+    all. Both facts were verified: the 30-category taxonomy contains no header class, and
+    images/12.png shows the header block blurred while the line-item block and totals are
+    legible. Every parties.* and receiptInfo.* path is therefore NOT ANNOTATED (state iii in
+    core/canonical.py) and leaves every denominator. Scoring the model for "correctly emitting
+    null" on a field the page does not legibly carry would inflate the numbers; scoring it for
+    failing to read a blurred field would deflate them. Neither is a measurement.
+  consequence: >
+    CORD measures line-item and totals extraction only. SROIE measures the four header fields.
+    The two are complementary and their numbers are never pooled.
+
+# ==========================================================================================
+# REPEATED SECTIONS — declared before the rows that populate them
+# ==========================================================================================
+list_sections:
+  - path: lineItems
+    gt_row_source: "gt_parse.menu[], one row per CORD group_id, in group_id order"
+    match_keys: [description, itemCode]
+    pred_text_leaves: [description, itemCode]
+    threshold: 0.8
+    note: >
+      Rows are ALIGNED, never compared index-wise -- see core/rows.py. 39 of 1,000 documents
+      carry two or more items with the same printed name, which is precisely the case exact
+      assignment plus a numeric tie-break exists for. 2,569 GT rows corpus-wide; 431 documents
+      have exactly one row and the largest has 22.
+
+  - path: totals.subtotal
+    gt_row_source: "one row per DISTINCT printed amount, keyed by its own caption, from
+                    valid_line occurrences of sub_total.subtotal_price"
+    multiple_lines_policy: >
+      NEVER SUMMED. 9 of the 1,000 documents print more than one subtotal line (1 in the test
+      split). Tested against the printed grand total, the SUM matched in 0 of 8 and the LARGEST
+      in 7 of 8 -- because 7 of the 9 print the SAME amount twice. test-13, checked against its
+      image, prints 46.636 as 'TOTAL' and again as 'DPP' (Dasar Pengenaan Pajak, the Indonesian
+      tax base): line items 43.636 + 3.000 = 46.636, plus 10% tax = the 51.300 grand total. A
+      sum of 93,272 corresponds to nothing printed.
+      One row per DISTINCT value, keyed by the caption the receipt prints. Exact duplicates are
+      deduplicated with a published exclusion naming the caption that was dropped -- a
+      restatement records no new fact, and requiring a model to echo it would turn row recall
+      into a measure of transcription completeness. Where the amounts genuinely differ, both
+      rows are kept: train-603 carries 'subtotal' 73,638 AND 'Before Rounding' 81,002.
+      Reading occurrences from valid_line rather than gt_parse also RAISED coverage from 46 to
+      65 scoreable subtotal rows on the test split, because gt_parse collapses a repeated
+      category into a caption-less list that had to be excluded as ambiguous.
+    match_keys: [key]
+    pred_text_leaves: [key]
+    note: >
+      ReceiptTotals.subtotal is a LIST of {key, value} where the invoice equivalent is a
+      scalar. Aligned on the printed key, because matching a one-row section by position would
+      score whatever the model happened to put first.
+
+  - path: totals.taxes
+    gt_row_source: "one row {key: tax, value: N} from sub_total.tax_price"
+    match_keys: [key]
+    pred_text_leaves: [key]
+
+  - path: totals.otherCharges
+    gt_row_source: "rows from sub_total.service_price and sub_total.othersvc_price"
+    match_keys: [key]
+    pred_text_leaves: [key]
+
+# ==========================================================================================
+# MAPPED — line items
+# ==========================================================================================
+mappings:
+  - label: menu.nm
+    labels: [menu.nm]
+    status: mapped
+    confidence: high
+    coverage_docs: 995
+    section: lineItems
+    row_key: description
+    targets:
+      - {path: "lineItems[].description", parser: cord_text, match: anls_0.8}
+    absence_authoritative: false
+    note: >
+      The item's printed name, and the primary row-alignment key. A LIST value here means CORD
+      read the name across two lines; it is joined rather than dropped, because the row still
+      names one product and dropping it would remove a scoreable row (4 documents).
+
+  - label: menu.num
+    labels: [menu.num]
+    status: mapped
+    confidence: high
+    coverage_docs: 45
+    section: lineItems
+    row_key: itemCode
+    targets:
+      - {path: "lineItems[].itemCode", parser: passthrough_strip, match: identifier}
+    absence_authoritative: false
+    note: >
+      Printed article number. itemCode is in _COMMON_IDENTIFIERS, so it is matched strictly --
+      a near miss on a product code is a full miss. Secondary alignment key, for the rows whose
+      name CORD did not capture.
+
+  - label: menu.cnt
+    labels: [menu.cnt]
+    status: mapped
+    confidence: high
+    coverage_docs: 910
+    section: lineItems
+    row_key: quantity
+    targets:
+      - {path: "lineItems[].quantity", parser: cord_qty, match: numeric}
+    absence_authoritative: false
+    note: >
+      410 of 2,331 corpus values carry an 'x' on one side or the other ('1X', 'x1', '2x'), so
+      the parser strips it. A bare 'x' with no digits returns None and becomes an exclusion.
+
+  - label: menu.unitprice
+    labels: [menu.unitprice]
+    status: mapped
+    confidence: high
+    coverage_docs: 356
+    section: lineItems
+    row_key: unitPrice
+    targets:
+      - {path: "lineItems[].unitPrice", parser: cord_money, match: numeric}
+    absence_authoritative: false
+    note: "Frequently printed with a leading '@' ('@30,000'), which the parser strips."
+
+  - label: menu.price
+    labels: [menu.price]
+    status: mapped
+    confidence: high
+    coverage_docs: 997
+    section: lineItems
+    row_key: lineTotal
+    targets:
+      - {path: "lineItems[].lineTotalIncludingTax", parser: cord_money, match: numeric}
+      - {path: "lineItems[].lineTotalExcludingTax", parser: cord_money, match: numeric}
+    union: true
+    absence_authoritative: false
+    note: >
+      DELIBERATE UNION of two prediction leaves. CORD does not state whether the printed line
+      amount is tax-inclusive, and Indonesian receipts vary -- 20 of the 58 documents where
+      sum(line prices) != subtotal differ precisely because tax or service is folded in. A
+      model that routes the number to ExcludingTax has not got the NUMBER wrong. The union
+      scores the arithmetic and not the routing; core/rows.py records which leaf won.
+
+  - label: menu.itemsubtotal
+    labels: [menu.itemsubtotal]
+    status: mapped
+    confidence: medium
+    coverage_docs: 4
+    section: lineItems
+    row_key: lineTotal
+    targets:
+      - {path: "lineItems[].lineTotalIncludingTax", parser: cord_money, match: numeric}
+      - {path: "lineItems[].lineTotalExcludingTax", parser: cord_money, match: numeric}
+    union: true
+    fallback_for: menu.price
+    absence_authoritative: false
+    note: >
+      Used only where the row has no menu.price. 4 documents, so this can never clear the
+      headline bar; mapped anyway so the rows are not silently unscoreable, and the eligibility
+      test bars it rather than a hand decision.
+
+  - label: menu.discountprice
+    labels: [menu.discountprice]
+    status: mapped
+    confidence: medium
+    coverage_docs: 42
+    section: lineItems
+    row_key: discountAmount | discountPercent
+    targets:
+      - {path: "lineItems[].discountAmount",  parser: cord_money_abs, match: numeric, when: "value has no % sign"}
+      - {path: "lineItems[].discountPercent", parser: cord_percent,   match: numeric, when: "value ends in %"}
+    absence_authoritative: false
+    note: >
+      MEASURED, not assumed: 99 of 101 corpus values are AMOUNTS ('800-', '1,400 -', '1,260-')
+      and only 2 are percents. Routing all of them to discountPercent would score a
+      1,400-rupiah discount as a 1,400 percent discount. The '%' decides, per value.
+      The amount is stored as a POSITIVE MAGNITUDE: a trailing '-' is the Indonesian no-cents
+      marker on some receipts and a minus sign on others, and the schema wants a magnitude --
+      the same choice fatura_parsers.money_abs makes, for the same postprocessor reason.
+
+# ==========================================================================================
+# MAPPED — totals
+# ==========================================================================================
+  - label: sub_total.subtotal_price
+    labels: [sub_total.subtotal_price]
+    status: mapped
+    confidence: high
+    coverage_docs: 662
+    section: totals.subtotal
+    row_key: value
+    targets:
+      - {path: "totals.subtotal[].key",   parser: caption_printed, fallback: subtotal, match: text}
+      - {path: "totals.subtotal[].value", parser: cord_money, match: numeric}
+    absence_authoritative: false
+
+  - label: sub_total.tax_price
+    labels: [sub_total.tax_price]
+    status: mapped
+    confidence: high
+    coverage_docs: 445
+    section: totals.taxes
+    row_key: value
+    targets:
+      - {path: "totals.taxes[].key",        parser: caption_printed, match: text}
+      - {path: "totals.taxes[].value",      parser: cord_money, match: numeric}
+      - {path: "totals.taxes[].percentage", parser: cord_percent, match: numeric,
+         when: "the printed caption ends in a rate"}
+    absence_authoritative: false
+    percentage_from_caption: true
+    note: >
+      AMENDED after the dev smoke run (see CHANGELOG). The row key is the caption the receipt
+      PRINTS, recovered from valid_line's is_key words -- 'SUBTTL', 'PB1 10%', 'SVC CHG 6%' --
+      not an invented English word. Where a tax caption ends in a rate it is SPLIT: 'PB1 10%'
+      becomes key 'PB1' and percentage '10.00', which is what ReceiptTotals.taxes[] models and
+      exactly what the extractor emits. totals.otherCharges is deliberately NOT split -- it has
+      no percentage field, so 'SVC CHG 6%' is the charge's whole name.
+
+  - label: sub_total.service_price
+    labels: [sub_total.service_price]
+    status: mapped
+    confidence: high
+    coverage_docs: 123
+    section: totals.otherCharges
+    row_key: value
+    targets:
+      - {path: "totals.otherCharges[].key",   parser: caption_printed, fallback: service, match: text}
+      - {path: "totals.otherCharges[].value", parser: cord_money, match: numeric}
+    absence_authoritative: false
+
+  - label: sub_total.othersvc_price
+    labels: [sub_total.othersvc_price]
+    status: mapped
+    confidence: medium
+    coverage_docs: 1
+    section: totals.otherCharges
+    row_key: value
+    targets:
+      - {path: "totals.otherCharges[].key",   parser: caption_printed, fallback: other service, match: text}
+      - {path: "totals.otherCharges[].value", parser: cord_money, match: numeric}
+    absence_authoritative: false
+    note: "1 document. Mapped for completeness; cannot clear the headline bar."
+
+  - label: sub_total.discount_price
+    labels: [sub_total.discount_price]
+    status: mapped
+    confidence: high
+    coverage_docs: 74
+    targets:
+      - {path: totals.discountTotal, parser: cord_money_abs, match: numeric}
+    absence_authoritative: false
+    note: >
+      Positive magnitude. CORD prints it negative on some receipts ('-60.000') and
+      parenthesised on others ('(0)'); ai/postprocessing normalises a negative discountTotal to
+      its absolute value, so storing GT negative would make the postprocessed arm score worse
+      on every discounted receipt as a pure sign artifact.
+
+  - label: total.total_price
+    labels: [total.total_price]
+    status: mapped
+    confidence: high
+    coverage_docs: 972
+    targets:
+      - {path: totals.totalIncludingTax, parser: cord_money, match: numeric}
+    absence_authoritative: false
+    note: "CORD's strongest field and the one directly comparable to SROIE's `Total`."
+
+  - label: total.cashprice
+    labels: [total.cashprice]
+    status: mapped
+    confidence: high
+    coverage_docs: 648
+    targets:
+      - {path: totals.cash, parser: cord_money, match: numeric}
+    absence_authoritative: false
+
+  - label: total.changeprice
+    labels: [total.changeprice]
+    status: mapped
+    confidence: high
+    coverage_docs: 620
+    targets:
+      - {path: totals.change, parser: cord_money, match: numeric}
+    absence_authoritative: false
+
+# ==========================================================================================
+# UNMAPPED — CORD annotates it, ReceiptData has no field for it. Scored nowhere.
+# ==========================================================================================
+  - label: menu.sub
+    labels: [menu.sub]
+    status: unmapped
+    coverage_docs: 157
+    reason: >
+      Sub-items (a modifier or component priced under its parent line). ReceiptData.lineItems
+      is flat and has no sub-item concept. Folding a sub-item into its parent row would change
+      the parent's total; promoting it to its own row would invent a line the receipt does not
+      print as one. Either choice invents ground truth, so it is scored nowhere -- and the
+      decision is REVERSIBLE, because prepare_cord_v2.py keeps the sub-items in gt_parse.
+      Inner keys present: nm 404, cnt 191, price 157, unitprice 14.
+
+  - label: menu.etc
+    labels: [menu.etc]
+    status: unmapped
+    coverage_docs: 2
+    reason: "CORD's per-row catch-all. No stated semantics, so no schema home."
+
+  - label: menu.vatyn
+    labels: [menu.vatyn]
+    status: unmapped
+    coverage_docs: 3
+    reason: >
+      MEASURED, not assumed: despite the name this is not a Y/N flag. All 3 corpus values are
+      free text -- 'Sales included PB1', 'Sales included PB1', '10% Tax Included' -- so
+      lineItems[].lineTaxabilityCode, which expects a code, is the wrong home. An earlier draft
+      of this map mapped it there on the strength of the name alone.
+
+  - label: void_menu.nm
+    labels: [void_menu.nm]
+    status: unmapped
+    coverage_docs: 1
+    reason: >
+      A cancelled line. It is printed on the receipt but is not part of the purchase, and
+      ReceiptData has no way to mark a line void. Scoring it would penalise a model that
+      correctly omitted a voided item.
+
+  - label: void_menu.price
+    labels: [void_menu.price]
+    status: unmapped
+    coverage_docs: 1
+    reason: "Same as void_menu.nm."
+
+  - label: sub_total.etc
+    labels: [sub_total.etc]
+    status: unmapped
+    coverage_docs: 76
+    reason: >
+      An unlabelled subtotal-block line. CORD does not say what it is, so it cannot be routed
+      to a keyed totals row without inventing the key. The largest unmapped label in the
+      corpus; revisit if a reviewer can characterise it from a sample of the images.
+
+  - label: total.creditcardprice
+    labels: [total.creditcardprice]
+    status: unmapped
+    coverage_docs: 151
+    reason: >
+      Amount tendered by card. ReceiptTotals has cash and change but no tender-by-instrument
+      field, and routing a card amount to totals.cash would be wrong by construction.
+
+  - label: total.emoneyprice
+    labels: [total.emoneyprice]
+    status: unmapped
+    coverage_docs: 51
+    reason: "Amount tendered by e-money. Same gap as total.creditcardprice."
+
+  - label: total.menuqty_cnt
+    labels: [total.menuqty_cnt]
+    status: unmapped
+    coverage_docs: 283
+    reason: >
+      Total number of items on the receipt. A document-level count with no ReceiptData field.
+      It is NOT the same as len(lineItems) -- it counts units, not lines -- so deriving a check
+      from it would be a second measurement, not a mapping.
+
+  - label: total.menutype_cnt
+    labels: [total.menutype_cnt]
+    status: unmapped
+    coverage_docs: 52
+    reason: "Number of distinct products. Same gap as total.menuqty_cnt."
+
+  - label: total.total_etc
+    labels: [total.total_etc]
+    status: unmapped
+    coverage_docs: 33
+    reason: "CORD's total-block catch-all. No stated semantics, so no schema home."
+
+# ==========================================================================================
+# NOT ANNOTATED — ReceiptData paths CORD cannot speak to. Excluded from EVERY denominator.
+# ==========================================================================================
+not_annotated:
+  reason: >
+    CORD-v2's taxonomy covers line items and the totals block only. The header and footer are
+    blurred in the source images (see header_policy). A path listed here is state (iii) in
+    core/canonical.py: not in annotated_fields, so neither a value nor a null is scored.
+  paths:
+    - currency
+    - receiptInfo.documentNumber
+    - receiptInfo.txnDate
+    - receiptInfo.txnDateISO
+    - receiptInfo.customerNumber
+    - receiptInfo.customerMemo
+    - receiptInfo.category
+    - parties.seller.name
+    - parties.seller.addressStructured.address
+    - parties.seller.addressStructured.city
+    - parties.seller.addressStructured.state
+    - parties.seller.addressStructured.postal_code
+    - parties.seller.addressStructured.country
+    - parties.seller.phone
+    - parties.seller.email
+    - parties.customer.name
+    - parties.customer.addressStructured.address
+    - parties.customer.addressStructured.city
+    - parties.customer.addressStructured.state
+    - parties.customer.addressStructured.postal_code
+    - parties.customer.addressStructured.country
+    - parties.customer.phone
+    - parties.customer.email
+    - "lineItems[].lineTaxAmount"
+    - "lineItems[].lineTaxPercent"
+    - "lineItems[].lineTaxabilityCode"
+    - totals.discountPercentage
+    - totals.totalExcludingTax
+    - totals.roundingAdjustment
+    - applyTaxAfterDiscount
+
+# ==========================================================================================
+absence_policy:
+  authoritative: false
+  reason: >
+    CORD annotates what a human marked on the page. A label's absence from a document means
+    the annotator did not mark it, which is not evidence the fact is absent from the receipt.
+    Every mapped path is therefore scored for RECALL only, and the hallucination figure is
+    structurally zero -- not a result. Reported with that caveat, exactly as SROIE is.
+
+headline_eligibility:
+  bar: ">= 30 documents AND >= 20 distinct ground-truth values (scripts/build_gt.py)"
+  note: >
+    Coverage above is over all 1,000 documents. A 100-document run divides it by ten, so on the
+    test split alone only menu.nm / menu.price / menu.cnt / menu.unitprice (scored over ROWS,
+    ~257 of them) and total.total_price, sub_total.subtotal_price, sub_total.tax_price,
+    total.cashprice, total.changeprice can clear the bar. Run the eligibility test rather than
+    assuming this list; it is stated here so nobody is surprised by it after the fact.
+
+CHANGELOG:
+  - date: 2026-09-07
+    who: Claude (draft), pending two-reviewer sign-off
+    change: >
+      AMENDED FROM THE dev SMOKE RUN (10 documents, gt/receipt/cord/cord_dev_smoke_10.json).
+      Both changes are to the INSTRUMENT, not to a threshold, and both were forced by finding
+      the benchmark scoring a correct answer wrong. The reported numbers still come from the
+      test split, which no amendment has seen.
+      (1) Keyed totals rows are now identified by the caption the receipt PRINTS, recovered
+      from valid_line's is_key words, instead of by an invented English key. Before: 3 of 7
+      subtotals, 2 of 5 taxes and 1 of 3 service charges aligned, and every aligned row was
+      100% correct -- the model had read 'SUBTTL', 'PB1' and 'SVC CHG 6%' exactly as printed
+      while the map demanded 'subtotal', 'tax' and 'service'. After: 5 of 6, 4 of 4 and 3 of 3
+      of the rows the model emitted.
+      (2) A tax caption ending in a rate is split -- 'PB1 10%' becomes key 'PB1' plus
+      percentage '10.00' -- because ReceiptTotals.taxes[] has a percentage field and that is
+      exactly what the extractor emits. totals.taxes[].percentage moved out of not_annotated
+      and scored 2 of 2. totals.otherCharges is deliberately NOT split: it has no percentage
+      field, so 'SVC CHG 6%' is the charge's whole name and splitting it would break an
+      alignment that works.
+  - date: 2026-09-07
+    who: Claude (draft), pending two-reviewer sign-off
+    change: >
+      Initial map, authored blind against the CORD-v2 taxonomy and ReceiptData. Coverage
+      figures measured from gt_parse over all 1,000 documents before any model output existed.
+      Two corrections to the pre-data draft, both forced by the measurement and not by scores:
+      menu.discountprice routed to discountAmount (99 of 101 values are amounts, not percents),
+      and menu.vatyn demoted to unmapped (all 3 values are free text, not a taxability code).

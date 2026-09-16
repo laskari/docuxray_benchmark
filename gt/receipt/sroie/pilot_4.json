@@ -1,0 +1,22 @@
+{
+  "dataset": "sroie",
+  "doc_type": "receipt",
+  "n_docs": 4,
+  "n_templates": 4,
+  "n_gt_rows": 0,
+  "purpose": "verification gate and the hand-adjudication set \u2014 not a measurement",
+  "selection": "one document per distinct key-set, then filled by line-item table size (none / single / small / medium / large) so the pilot cannot consist of ten easy single-row tables",
+  "strata": {
+    "none": 626,
+    "single": 0,
+    "small": 0,
+    "medium": 0,
+    "large": 0
+  },
+  "doc_ids": [
+    "104",
+    "276",
+    "313",
+    "477"
+  ]
+}

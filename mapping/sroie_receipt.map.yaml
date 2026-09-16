@@ -1,0 +1,72 @@
+version: 1.0-frozen
+dataset: SROIE (annotations, 1000 files)
+schema_ref: "ai/extraction/new_schema.py :: ReceiptData"
+leaf_paths_ref: schema/receipt_leaf_paths.tsv
+
+mappings:
+  - label: company
+    labels: [company]
+    status: mapped
+    targets:
+      - {path: parties.seller.name, parser: passthrough_strip, match: text_contained}
+    absence_authoritative: false
+
+  - label: date
+    labels: [date]
+    status: mapped
+    targets:
+      - {path: receiptInfo.txnDate, parser: passthrough_strip}
+      - {path: receiptInfo.txnDateISO, parser: date_to_iso}
+    absence_authoritative: false
+
+  - label: address
+    labels: [address]
+    status: mapped
+    targets:
+      - {path: parties.seller.addressStructured, parser: address_whole, match: anls_0.8_merged}
+    consumed_paths: [ "parties.seller.addressStructured.city", "parties.seller.addressStructured.state", "parties.seller.addressStructured.postal_code", "parties.seller.addressStructured.country" ]
+    absence_authoritative: false
+
+  - label: total
+    labels: [total]
+    status: mapped
+    targets:
+      - {path: totals.totalIncludingTax, parser: money_amount}
+    absence_authoritative: false
+
+not_annotated:
+  reason: SROIE only provides 4 labels. All other schema paths are not annotated and must not be scored.
+  paths:
+    - receiptInfo.documentNumber
+    - receiptInfo.customerNumber
+    - receiptInfo.customerMemo
+    - receiptInfo.category
+    - parties.seller.phone
+    - parties.seller.email
+    - parties.seller.addressStructured.city
+    - parties.seller.addressStructured.state
+    - parties.seller.addressStructured.postal_code
+    - parties.seller.addressStructured.country
+    - parties.customer.name
+    - parties.customer.addressStructured.address
+    - parties.customer.addressStructured.city
+    - parties.customer.addressStructured.state
+    - parties.customer.addressStructured.postal_code
+    - parties.customer.addressStructured.country
+    - parties.customer.phone
+    - parties.customer.email
+    - totals.discountTotal
+    - totals.discountPercentage
+    - totals.subtotal[].key
+    - totals.subtotal[].value
+    - totals.totalExcludingTax
+    - totals.otherCharges[].key
+    - totals.otherCharges[].value
+    - totals.taxes[].key
+    - totals.taxes[].value
+    - totals.taxes[].percentage
+    - totals.cash
+    - totals.change
+    - totals.roundingAdjustment
+    - applyTaxAfterDiscount
+    - currency

@@ -1,0 +1,64 @@
+{
+  "dataset": "sroie",
+  "doc_type": "receipt",
+  "n_docs": 626,
+  "n_clusters": 626,
+  "n_keysets": 2,
+  "n_gt_line_item_rows": 0,
+  "scoreable_paths": 5,
+  "headline_eligible_paths": 4,
+  "headline_bar": {
+    "min_docs": 30,
+    "min_distinct_values": 20
+  },
+  "exclusions": {
+    "GT value present but unparseable (date)": 621
+  },
+  "paths": [
+    {
+      "path": "parties.seller.addressStructured",
+      "n_docs": 626,
+      "n_clusters": 626,
+      "distinct_gt_values": 291,
+      "absent_docs": 1,
+      "headline_eligible": true,
+      "constant_across_clusters": false
+    },
+    {
+      "path": "parties.seller.name",
+      "n_docs": 626,
+      "n_clusters": 626,
+      "distinct_gt_values": 236,
+      "absent_docs": 0,
+      "headline_eligible": true,
+      "constant_across_clusters": false
+    },
+    {
+      "path": "receiptInfo.txnDate",
+      "n_docs": 626,
+      "n_clusters": 626,
+      "distinct_gt_values": 493,
+      "absent_docs": 0,
+      "headline_eligible": true,
+      "constant_across_clusters": false
+    },
+    {
+      "path": "receiptInfo.txnDateISO",
+      "n_docs": 5,
+      "n_clusters": 5,
+      "distinct_gt_values": 4,
+      "absent_docs": 0,
+      "headline_eligible": false,
+      "constant_across_clusters": false
+    },
+    {
+      "path": "totals.totalIncludingTax",
+      "n_docs": 626,
+      "n_clusters": 626,
+      "distinct_gt_values": 448,
+      "absent_docs": 1,
+      "headline_eligible": true,
+      "constant_across_clusters": false
+    }
+  ]
+}

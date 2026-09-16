@@ -1,0 +1,106 @@
+{
+  "dataset": "cord",
+  "doc_type": "receipt",
+  "dataset_root": "/sessions/rcw-01lip9eponq9gdmzpnm27m6t/mnt/data/CORD_v2",
+  "root_overridden": true,
+  "n_docs": 1000,
+  "n_clusters": 1000,
+  "n_keysets": 287,
+  "n_gt_line_item_rows": 2569,
+  "scoreable_paths": 8,
+  "headline_eligible_paths": 8,
+  "headline_bar": {
+    "min_docs": 30,
+    "min_distinct_values": 20
+  },
+  "exclusions": {
+    "GT value present but ambiguous (CORD annotated the same category twice)": 25,
+    "rows indistinguishable to the aligner (identical description, itemCode and tie-b": 10,
+    "row has no description or itemCode to align on": 8,
+    "the same amount is printed again under a different caption (already recorded as ": 8,
+    "GT value present but unparseable ('-')": 6,
+    "document has no alignable menu rows (0 GT rows)": 6,
+    "GT value present but unparseable ('Rp 57,0000')": 1,
+    "GT value present but unparseable ('30.273 200')": 1,
+    "GT value present but unparseable ('10% 4,818')": 1,
+    "GT value present but unparseable ('Pb1 10% 7,000')": 1,
+    "GT value present but unparseable ('10.000%')": 1,
+    "GT value present but unparseable ('Discount (0%)')": 1,
+    "GT value present but unparseable ('385,0000')": 1,
+    "GT value present but unparseable ('Discount(0%)')": 1
+  },
+  "paths": [
+    {
+      "path": "lineItems",
+      "n_docs": 994,
+      "n_clusters": 994,
+      "distinct_gt_values": 838,
+      "absent_docs": 0,
+      "headline_eligible": true,
+      "constant_across_clusters": false
+    },
+    {
+      "path": "totals.cash",
+      "n_docs": 640,
+      "n_clusters": 640,
+      "distinct_gt_values": 128,
+      "absent_docs": 0,
+      "headline_eligible": true,
+      "constant_across_clusters": false
+    },
+    {
+      "path": "totals.change",
+      "n_docs": 619,
+      "n_clusters": 619,
+      "distinct_gt_values": 157,
+      "absent_docs": 0,
+      "headline_eligible": true,
+      "constant_across_clusters": false
+    },
+    {
+      "path": "totals.discountTotal",
+      "n_docs": 70,
+      "n_clusters": 70,
+      "distinct_gt_values": 30,
+      "absent_docs": 0,
+      "headline_eligible": true,
+      "constant_across_clusters": false
+    },
+    {
+      "path": "totals.otherCharges",
+      "n_docs": 124,
+      "n_clusters": 124,
+      "distinct_gt_values": 110,
+      "absent_docs": 0,
+      "headline_eligible": true,
+      "constant_across_clusters": false
+    },
+    {
+      "path": "totals.subtotal",
+      "n_docs": 662,
+      "n_clusters": 662,
+      "distinct_gt_values": 486,
+      "absent_docs": 0,
+      "headline_eligible": true,
+      "constant_across_clusters": false
+    },
+    {
+      "path": "totals.taxes",
+      "n_docs": 438,
+      "n_clusters": 438,
+      "distinct_gt_values": 357,
+      "absent_docs": 0,
+      "headline_eligible": true,
+      "constant_across_clusters": false
+    },
+    {
+      "path": "totals.totalIncludingTax",
+      "n_docs": 969,
+      "n_clusters": 969,
+      "distinct_gt_values": 422,
+      "absent_docs": 0,
+      "headline_eligible": true,
+      "constant_across_clusters": false
+    }
+  ]
+}

@@ -1,0 +1,40 @@
+{
+  "dataset": "cord_verbatim",
+  "doc_type": "receipt",
+  "split": "dev",
+  "n_docs": 20,
+  "n_templates": 20,
+  "n_gt_rows": 60,
+  "purpose": "hand-adjudicate every mismatch; the map may be amended from this set and from no other",
+  "selection": "20 of 100 dev documents, round-robin across line-item table size (none/single/small/medium/large), seed 20260907",
+  "seed": 20260907,
+  "strata": {
+    "medium": 6,
+    "single": 7,
+    "small": 6,
+    "large": 1
+  },
+  "excluded_from": null,
+  "doc_ids": [
+    "dev-11",
+    "dev-16",
+    "dev-19",
+    "dev-23",
+    "dev-26",
+    "dev-35",
+    "dev-41",
+    "dev-43",
+    "dev-46",
+    "dev-55",
+    "dev-70",
+    "dev-71",
+    "dev-78",
+    "dev-79",
+    "dev-82",
+    "dev-88",
+    "dev-89",
+    "dev-90",
+    "dev-92",
+    "dev-96"
+  ]
+}

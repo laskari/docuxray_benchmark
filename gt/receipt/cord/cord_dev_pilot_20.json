@@ -1,0 +1,39 @@
+{
+  "dataset": "cord",
+  "doc_type": "receipt",
+  "split": "dev",
+  "n_docs": 20,
+  "n_templates": 20,
+  "n_gt_rows": 55,
+  "purpose": "hand-adjudicate every mismatch; the map may be amended from this set and from no other",
+  "selection": "20 of 90 dev documents, round-robin across line-item table size (none/single/small/medium/large), seed 20260907",
+  "seed": 20260907,
+  "strata": {
+    "single": 7,
+    "small": 7,
+    "medium": 6
+  },
+  "excluded_from": "gt/receipt/cord/cord_dev_smoke_10.json",
+  "doc_ids": [
+    "dev-16",
+    "dev-18",
+    "dev-25",
+    "dev-29",
+    "dev-34",
+    "dev-45",
+    "dev-49",
+    "dev-50",
+    "dev-59",
+    "dev-62",
+    "dev-63",
+    "dev-76",
+    "dev-77",
+    "dev-81",
+    "dev-82",
+    "dev-84",
+    "dev-86",
+    "dev-90",
+    "dev-95",
+    "dev-98"
+  ]
+}

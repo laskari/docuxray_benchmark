@@ -1,0 +1,97 @@
+{
+  "dataset": "cord_verbatim",
+  "doc_type": "receipt",
+  "dataset_root": "/sessions/rcw-01lip9eponq9gdmzpnm27m6t/mnt/data/CORD_v2",
+  "root_overridden": true,
+  "n_docs": 1000,
+  "n_clusters": 1000,
+  "n_keysets": 287,
+  "n_gt_line_item_rows": 2569,
+  "scoreable_paths": 8,
+  "headline_eligible_paths": 8,
+  "headline_bar": {
+    "min_docs": 30,
+    "min_distinct_values": 20
+  },
+  "exclusions": {
+    "GT value present but ambiguous (CORD annotated the same category twice)": 25,
+    "rows indistinguishable to the aligner (identical description, itemCode and tie-b": 24,
+    "row has no description or itemCode to align on": 8,
+    "the same amount is printed again under a different caption (already recorded as ": 8,
+    "document has no alignable menu rows (0 GT rows)": 6
+  },
+  "paths": [
+    {
+      "path": "lineItems",
+      "n_docs": 994,
+      "n_clusters": 994,
+      "distinct_gt_values": 864,
+      "absent_docs": 0,
+      "headline_eligible": true,
+      "constant_across_clusters": false
+    },
+    {
+      "path": "totals.cash",
+      "n_docs": 640,
+      "n_clusters": 640,
+      "distinct_gt_values": 196,
+      "absent_docs": 0,
+      "headline_eligible": true,
+      "constant_across_clusters": false
+    },
+    {
+      "path": "totals.change",
+      "n_docs": 619,
+      "n_clusters": 619,
+      "distinct_gt_values": 238,
+      "absent_docs": 0,
+      "headline_eligible": true,
+      "constant_across_clusters": false
+    },
+    {
+      "path": "totals.discountTotal",
+      "n_docs": 73,
+      "n_clusters": 73,
+      "distinct_gt_values": 37,
+      "absent_docs": 0,
+      "headline_eligible": true,
+      "constant_across_clusters": false
+    },
+    {
+      "path": "totals.otherCharges",
+      "n_docs": 124,
+      "n_clusters": 124,
+      "distinct_gt_values": 110,
+      "absent_docs": 0,
+      "headline_eligible": true,
+      "constant_across_clusters": false
+    },
+    {
+      "path": "totals.subtotal",
+      "n_docs": 662,
+      "n_clusters": 662,
+      "distinct_gt_values": 511,
+      "absent_docs": 0,
+      "headline_eligible": true,
+      "constant_across_clusters": false
+    },
+    {
+      "path": "totals.taxes",
+      "n_docs": 445,
+      "n_clusters": 445,
+      "distinct_gt_values": 365,
+      "absent_docs": 0,
+      "headline_eligible": true,
+      "constant_across_clusters": false
+    },
+    {
+      "path": "totals.totalIncludingTax",
+      "n_docs": 971,
+      "n_clusters": 971,
+      "distinct_gt_values": 519,
+      "absent_docs": 0,
+      "headline_eligible": true,
+      "constant_across_clusters": false
+    }
+  ]
+}
