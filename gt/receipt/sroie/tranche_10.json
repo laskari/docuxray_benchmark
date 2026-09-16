@@ -1,0 +1,22 @@
+{
+  "dataset": "sroie",
+  "doc_type": "receipt",
+  "n_docs": 10,
+  "n_templates": 10,
+  "purpose": "incremental batch tranche: first 10 of a single seeded shuffle of all 626 SROIE documents",
+  "selection": "prefix of one random.Random(20260916) shuffle of all 626 doc_ids, so tranche_10 subset-of tranche_100 subset-of tranche_500 and no document is ever paid for twice",
+  "seed": 20260916,
+  "nested_in": "tranche_500.json",
+  "doc_ids": [
+    "029",
+    "212",
+    "222",
+    "245",
+    "255",
+    "367",
+    "480",
+    "483",
+    "562",
+    "593"
+  ]
+}

@@ -173,6 +173,10 @@ class DocResult:
     ok: bool = False
     cached: bool = False          # true only when EVERY model stage came from cache
     cached_stages: Dict[str, bool] = field(default_factory=dict)
+    # Stages this run's batch pre-pass paid for and put in the cache moments ago. They ARE
+    # cache hits by the time run_document reads them, but calling them "cached" would report
+    # a run that just spent money as one that spent none -- so they are counted apart.
+    batch_stages: Dict[str, bool] = field(default_factory=dict)
     timed_out: bool = False
     error: Optional[str] = None
     error_stage: Optional[str] = None
@@ -273,6 +277,9 @@ class Runner:
         self.spent = 0.0
         self._svc = None
         self._judge = None
+        # stage -> {doc_id} filled by this run's batch pre-pass. Set by core.batch before
+        # run_plan starts; empty on a sync run.
+        self._batch_filled: Dict[str, set] = {}
 
     # ---------------------------------------------------------------- lazy production handles
     @property
@@ -347,6 +354,7 @@ class Runner:
                     "postprocess": "FINAL"}.get(stage),
             "utc": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()),
             "cached": bool(r.cached_stages.get(stage, False)),
+            "from_batch": bool(r.batch_stages.get(stage, False)),
             "stage_ms": round(r.stage_ms.get(stage, 0.0), 1),
             **meta,
             "data": payload,
@@ -367,6 +375,7 @@ class Runner:
             "stage_status": r.stage_status,
             "stage_ms": {k: round(v, 1) for k, v in r.stage_ms.items()},
             "cached_stages": r.cached_stages,
+            "batch_stages": r.batch_stages,
             "files": {s: STAGE_FILES[s] for s in r.stage_status if s in STAGE_FILES},
             "tokens": r.tokens,
             "cost_usd": round(r.cost_usd, 6),
@@ -403,7 +412,8 @@ class Runner:
             self._write_status(r, done=True)
             raise
         r.stage_ms[name] = (time.time() - t0) * 1000
-        r.stage_status[name] = "cache" if r.cached_stages.get(name) else "ok"
+        r.stage_status[name] = ("batch" if r.batch_stages.get(name)
+                                else "cache" if r.cached_stages.get(name) else "ok")
         return value
 
     # ---------------------------------------------------------------- stages
@@ -452,11 +462,19 @@ class Runner:
 
         return postprocess_page(data, self.doc_type, job_id=None)
 
+    def _mark_hit(self, r: DocResult, stage: str) -> None:
+        """Record a cache hit, distinguishing a pre-existing entry from one this run's batch
+        pre-pass just paid for. Both are hits; only one of them was free."""
+        from_batch = r.doc_id in self._batch_filled.get(stage, ())
+        r.cached_stages[stage] = not from_batch
+        if from_batch:
+            r.batch_stages[stage] = True
+
     def _extract(self, r: DocResult, image: pathlib.Path, doc_id: str):
         key = self._cache_key(image, "extract")
         hit = self._cache_get(key)
         if hit:
-            r.cached_stages["extract"] = True
+            self._mark_hit(r, "extract")
             return hit["data"], hit["metadata"]
         r.cached_stages["extract"] = False
         from ai.pipeline_core import IMAGE_PREP_VERSION, prepare_extraction_image
@@ -487,7 +505,7 @@ class Runner:
                 jkey: str):
         hit = self._cache_get(jkey)
         if hit:
-            r.cached_stages["judge"] = True
+            self._mark_hit(r, "judge")
             return hit
         r.cached_stages["judge"] = False
         from PIL import Image
@@ -750,6 +768,9 @@ class Runner:
             "n_ok": len(ok),
             "n_failed": len(results) - len(ok),
             "n_cached": sum(1 for r in results if r.cached),
+            # Documents whose model stages this run's batch pre-pass paid for. Disjoint from
+            # n_cached by construction, so a batch run does not read as a free one.
+            "n_from_batch": sum(1 for r in results if getattr(r, "batch_stages", None)),
             "n_timed_out": sum(1 for r in results if getattr(r, "timed_out", False)),
             "stage_failures": stage_fail,
             "leaked_threads": sorted(_LEAKED),
@@ -826,6 +847,25 @@ def main(argv=None) -> int:
                          "section is the one hang observed in practice.")
     ap.add_argument("--concurrency", type=int, default=None,
                     help="override config.yaml; lower this first if a run stalls")
+    ap.add_argument("--mode", default=None, choices=("sync", "batch"),
+                    help="how the two paid stages reach Gemini. sync = one interactive call "
+                         "per part/section, `concurrency` documents at a time (production's "
+                         "path, the default). batch = submit every call in the plan as one "
+                         "Gemini Batch API job, wait, then run the plan against the filled "
+                         "cache: 50%% of the interactive price, one wait instead of N. "
+                         "Overrides run.model_mode.")
+    ap.add_argument("--batch-stages", default=None,
+                    help="which stages the batch pre-pass covers, comma separated: extract, "
+                         "judge, or both (default). Only meaningful with --mode batch. "
+                         "`judge` requires extraction to exist already -- from this run's "
+                         "own extract pre-pass or from the cache -- because the judge's "
+                         "cache key hashes the data it is asked to verify.")
+    ap.add_argument("--batch-poll-interval", type=float, default=None,
+                    help="seconds between batch job state checks (default 30)")
+    ap.add_argument("--batch-job-timeout", type=float, default=None,
+                    help="seconds to wait for a batch job before giving up (default 86400, "
+                         "Gemini's own SLO). Giving up does not cancel the job: --resume "
+                         "picks it back up from runs/<id>/batch/<stage>.json.")
     ap.add_argument("--dataset", default=None,
                     help="override run.dataset; required when a doc type has several datasets. "
                          "A dataset belongs to exactly one doc type, so naming one also sets "
@@ -863,6 +903,21 @@ def main(argv=None) -> int:
             cfg["run"]["doc_type"] = implied
     if a.image_prep:
         cfg["run"]["image_prep"] = a.image_prep
+    if a.mode:
+        cfg["run"]["model_mode"] = a.mode
+    mode = str(cfg["run"].get("model_mode", "sync")).strip().lower()
+    if mode not in ("sync", "batch"):
+        print(f"!! run.model_mode must be 'sync' or 'batch'; got {mode!r}")
+        return 2
+    batch_stages = [s.strip().lower()
+                    for s in (a.batch_stages
+                              or ",".join((cfg["run"].get("batch") or {}).get(
+                                  "stages", ["extract", "judge"]))).split(",")
+                    if s.strip()]
+    unknown_stages = [s for s in batch_stages if s not in ("extract", "judge")]
+    if unknown_stages:
+        print(f"!! --batch-stages takes 'extract' and/or 'judge'; got {unknown_stages}")
+        return 2
     sys.path.insert(0, cfg["paths"]["ai_backend"])
 
     plan = json.loads(pathlib.Path(a.plan).read_text(encoding="utf-8"))
@@ -983,6 +1038,12 @@ def main(argv=None) -> int:
         print(f"images     : all {len(doc_ids)} present under {dataset}")
         print(f"cache      : {cached} already extracted, {n_new} would call the "
               f"model{cache_note}")
+        if mode == "batch":
+            print(f"mode       : batch ({','.join(batch_stages)}) — {n_new} document(s) "
+                  f"submitted as one Gemini Batch API job at 50% of the interactive price, "
+                  f"then the plan runs against the filled cache")
+        else:
+            print("mode       : sync (one interactive call per part/section)")
         print(f"run id     : {run_id}")
         print(f"spend cap  : ${float(cfg['run']['spend_cap_usd']):,.2f}")
         print("\n--dry-run: nothing was called and nothing was written.")
@@ -1011,6 +1072,36 @@ def main(argv=None) -> int:
         print(f"resume: {len(carried)} already complete, {len(keep)} to run\n")
         doc_ids = keep
 
+    # ---- batch pre-pass -----------------------------------------------------------
+    # Runs BEFORE run_plan and writes into the very cache run_plan reads, so the loop below
+    # is unchanged: every model stage it asks for is already answered. Anything the batch
+    # could not complete is simply absent from the cache and is called synchronously there,
+    # which is why a partial batch degrades into a slower run rather than a failed one.
+    batch_meta = None
+    if mode == "batch" and doc_ids:
+        from core.batch import BatchAborted, run_prepass
+        try:
+            # Always resume a job this run already submitted, with or without --resume.
+            # That file only survives when a previous attempt died between submitting and
+            # collecting, and in that state the tokens are already spent: re-submitting
+            # would pay for the same plan twice and there is no reading of --resume under
+            # which that is what was wanted. --resume still governs which DOCUMENTS run.
+            pre = run_prepass(runner, cfg, doc_ids, images, stages=batch_stages,
+                              resume=True,
+                              poll_interval=a.batch_poll_interval,
+                              job_timeout=a.batch_job_timeout)
+        except BatchAborted as exc:
+            print(f"\n!! batch: {exc}")
+            return 3
+        except KeyboardInterrupt:
+            print("\n!! interrupted during the batch wait. Any job already submitted is "
+                  "still running and still billable — re-run the same command with --resume "
+                  "to collect it instead of submitting it again.")
+            return 130
+        batch_meta = pre.manifest_block()
+        for stat in pre.stats:
+            runner._batch_filled[stat.stage] = set(stat.filled)
+
     try:
         results = (carried + runner.run_plan(doc_ids, images, a.doc_timeout)) if doc_ids \
             else carried
@@ -1021,12 +1112,16 @@ def main(argv=None) -> int:
             d = json.loads(f.read_text())
             results.append(DocResult(**{k: v for k, v in d.items()
                                         if k in DocResult.__dataclass_fields__}))
-        runner.manifest(results, plan, {"aborted": str(exc)})
+        runner.manifest(results, plan,
+                        {"aborted": str(exc), "model_mode": mode, "batch": batch_meta})
         return 3
 
-    m = runner.manifest(results, plan)
+    m = runner.manifest(results, plan,
+                        {"model_mode": mode, "batch": batch_meta} if batch_meta
+                        else {"model_mode": mode})
     print(f"\n  ok {m['n_ok']}/{m['n_run']}  failed {m['n_failed']}"
           f"  cached {m['n_cached']}"
+          + (f"  from batch {m['n_from_batch']}" if m["n_from_batch"] else "")
           + (f"  timed out {m['n_timed_out']}" if m["n_timed_out"] else ""))
     if m["stage_failures"]:
         print(f"  stage failures {m['stage_failures']}")

@@ -83,6 +83,95 @@ stage file carries its own `stage_ms`, `cached` flag, model id, and — for the 
 
 Budget roughly **75 KB per document** for `stages/`; the 1,000-document main run is about 75 MB.
 
+## Two ways to reach Gemini: `sync` and `batch`
+
+`run.model_mode` in `config.yaml`, or `--mode` per invocation. It changes **how the bytes are
+fetched, not what is asked or what is measured.**
+
+```bash
+# the default: interactive calls, `concurrency` documents at a time
+python steps/step5_run.py --plan gt/receipt/sroie/main_626.json --run-id main
+
+# the Gemini Batch API: one job for the whole plan, 50% of the price
+python steps/step5_run.py --plan gt/receipt/sroie/main_626.json --run-id main --mode batch
+python steps/step5_run.py --plan ... --mode batch --batch-stages extract   # extraction only
+```
+
+| | sync | batch |
+|---|---|---|
+| extraction | 4–5 interactive calls per document | (4–5 × N) requests in one job |
+| judge | 5 interactive calls per document | (≤5 × N) requests in one job |
+| price | list | **50%** |
+| latency | N ÷ concurrency round trips | one wait for everything (~24h SLO, usually far less) |
+| retries | `_run_parts` retries a part 3× | one shot, then a synchronous retry here |
+| `concurrency` | governs the run | irrelevant — nothing is in flight |
+
+**How it works.** Batch mode is a **pre-pass**, not a different runner. Before `run_plan`
+starts, `core/batch.py` submits every model call the plan will make, waits, and writes each
+answer into the *same response cache* `_extract` and `_verify` already read. `run_plan` then
+walks the documents exactly as it always has and finds every model stage already answered. So
+arms, `--resume`, `runs/<id>/stages/`, scoring and every test are untouched, and
+
+> **a batch run and a sync run differ only in how the bytes were fetched.**
+
+`tests/test_batch.py` pins that claim directly: given the same model output, a document that
+came through the batch produces byte-identical `RAW` and `RAW_POSTPROCESSED` to one that came
+through an interactive call.
+
+**The cache key is deliberately identical for both modes.** Same model, same prompt version,
+same schema, same prepared bytes means the same measurement — so an existing cache stays valid
+and switching modes never re-pays. Provenance is not lost: the cached metadata carries a
+`batch` block naming the jobs and the discount, the stage status reads `batch` rather than
+`cache`, and the manifest records `model_mode` plus per-stage counts.
+
+### What batch is not
+
+**Not the path production runs.** Production extracts interactively, per document. Two
+differences are real, and are recorded rather than papered over:
+
+* **Retries differ.** Sync extraction retries a part up to 3× inside `_run_parts` on truncated
+  JSON or schema failure; a batch request gets one shot. A part that comes back broken is
+  retried **here, synchronously and at list price**, through the product's own
+  `extract_from_buffer`, so it lands back on the retried path instead of being scored as a
+  null. The per-document cost then reports the mixture (`cost.sync_retry_cost`), not a flat
+  halving.
+* **No think-token stream.** `_stream_part` / `_stream_section` exist to publish to Redis, which
+  this harness already disabled with `job_id=None`, so nothing is lost — but the batch response
+  is one blob, not a stream.
+
+**Anything the batch cannot complete falls through to the synchronous path.** A document whose
+extraction is still incomplete after the sync retry is simply *not cached*, and `run_plan`
+extracts it interactively like any other cache miss. A partial extraction in the cache would be
+read back as a complete one by this run and every run after it, so it is never written.
+
+The judge takes the coarser fallback: **any** failed section drops the whole document, which is
+then re-judged synchronously. Aggregate confidence is the **minimum** over sections, so a report
+missing a section is not slightly incomplete — it is a different, more confident report.
+
+### Stage order
+
+`--batch-stages` defaults to `extract,judge` and always runs in that order. The judge's cache
+key hashes *the data it is asked to verify*, so it does not exist until extraction has landed.
+That is the pipeline, not an implementation detail: `judge_worker.py:88` is fed
+`extraction_postprocessing_result`.
+
+### If it is interrupted
+
+**The tokens are committed at submit time, not at collect time.** The job name is written to
+`runs/<id>/batch/<stage>.json` *before* the first poll, and re-running the same command picks
+that job up instead of submitting — and paying for — the plan a second time. This happens with
+or without `--resume`, which governs which *documents* run, not which jobs are collected.
+
+`--batch-job-timeout` (default 86400s) only stops *waiting*; it does not cancel the job.
+
+### The spend cap works differently here
+
+`run_plan`'s cap check runs per document, *after* each is paid for. One `create_batch` commits
+the whole plan at once, so the check has to happen **before** submission: the pre-pass projects
+from this cache's own measured cost per document and refuses to submit rather than overrun. On
+the first run of a dataset there is nothing to project from and it says so — run a small
+`--limit` first if the cap matters.
+
 ## Safety rails
 
 * **Spend cap** (`config.yaml`) — exceeding it aborts and writes a partial manifest.

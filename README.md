@@ -107,6 +107,24 @@ worker and this harness call it.
   like model nondeterminism. Now controlled by `run.image_prep` and part of the cache key, so
   every existing cached extraction and verdict is correctly invalidated.
 
+Correction logged 2026-09-16: **`ai/pipeline_core.py` had gone missing from the ai_backend
+checkout** — only stale `__pycache__` bytecode remained, and the file was never tracked in git,
+so `import ai.pipeline_core` failed and `_extract`, `_postprocess` and `_image_prep_version`
+were all broken. It has been **reconstructed from `ai/__pycache__/pipeline_core.cpython-314.pyc`
+and verified bytecode-identical to it**: same code objects, same constants, same instructions,
+same line numbers. Only comments and blank-line placement are new, because those leave no trace
+in bytecode — everything executable is exact, and `tests/test_pipeline_parity.py` passes against
+the real postprocessors. **It still needs committing to the ai_backend repo**, where it is
+untracked; a module the benchmark's two most consequential stages import must not survive only
+as build output.
+
+Added 2026-09-16: **batch mode** (`run.model_mode: batch`, or `--mode batch`). Extraction and
+the judge can go through the Gemini Batch API — one job for the whole plan at 50% of the
+interactive price — instead of one interactive call per part and per section. It is implemented
+as a pre-pass that fills the response cache the runner already reads, so the runner, the arms
+and the scoring are untouched and a batch run differs from a sync run only in how the bytes
+were fetched. The cache key is deliberately the same for both modes. See `docs/05_RUNNING.md`.
+
 `scripts/rebuild_final.py` re-derives a completed run's FINAL arm from its stored
 `04_refined.json`, with no model calls, for when the postprocessing tail changes. Run against
 `runs/probe` after the format-contract fix: **0 of 51 documents changed**, so that run's

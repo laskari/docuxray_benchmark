@@ -55,6 +55,31 @@ run:
   arms: [RAW, RAW_POSTPROCESSED, FINAL]
   concurrency: 2         # each doc fans out to 4 extraction parts then 5 judge sections;
                          # 4 docs = up to 20 concurrent calls, which trips rate limiting
+                         # (sync mode only -- batch mode submits one job and waits)
+  # HOW THE TWO PAID STAGES REACH GEMINI. Not part of the frozen system: it changes how the
+  # bytes are fetched, not what is asked or what is measured.
+  #   sync   one interactive call per part/section, `concurrency` documents at a time. This
+  #          is the path production runs, and the default.
+  #   batch  the Gemini Batch API. Every extraction part and judge section in the plan goes
+  #          out as ONE job; the runner waits, writes the results into the response cache,
+  #          then runs the plan against that cache. 50% of the interactive price, one wait
+  #          instead of N, and `concurrency` stops mattering because nothing is in flight.
+  # Two differences from sync are real and are recorded rather than hidden: a batch request
+  # gets one shot where `_run_parts` retries three times (a broken part is retried here
+  # synchronously, at full price), and there is no think-token stream (already disabled in
+  # this harness by job_id=None). The cache key is deliberately IDENTICAL for both modes --
+  # same model, prompt, schema and prepared bytes means the same measurement -- so an
+  # existing cache stays valid and switching modes never re-pays.
+  model_mode: sync
+  batch:
+    stages: [extract, judge]   # judge needs extraction first: its key hashes what it verifies
+    poll_interval_s: 30
+    job_timeout_s: 86400       # Gemini's own SLO. Giving up does not cancel the job; --resume
+                               # picks it back up from runs/<id>/batch/<stage>.json.
+    # Inlined requests ride in the create call itself, so a job is bounded by payload size,
+    # not just count: one extraction part carries a ~1024px JPEG.
+    max_requests_per_job: 200
+    max_mb_per_job: 18
   # Hard per-stage wall-clock budgets, in seconds. These are what stops a run from freezing.
   # ai/llm builds genai.Client with no http_options (gemini_provider.py:83), so there is no HTTP
   # read timeout, and the judge waits on its 5 sections with as_completed and no timeout
