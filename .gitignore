@@ -45,3 +45,7 @@ _cells.json
 
 # Long-form article drafts kept locally, not part of the harness
 Claude outputs/
+
+# Claude Code local config and notes (personal, not versioned)
+.claude/
+CLAUDE.md
