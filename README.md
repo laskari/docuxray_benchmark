@@ -39,6 +39,18 @@ Steps 1–4 cost nothing. Step 5 is the only one that spends money.
 | 6 | side-by-side sheet for human adjudication | [06](docs/06_COMPARISON.md) |
 | 7 | metrics — overall, per field, per file | [07](docs/07_METRICS.md) |
 
+## Results
+
+| report | corpus | held out? |
+|---|---|---|
+| [11 — SROIE](docs/11_SROIE_RESULTS.md) | 337 receipts, original ICDAR `test` split | **yes** |
+| [09 — CORD-v2](docs/09_CORD_RESULTS.md) | 100 receipts, `test` split, with line items | yes |
+| [10 — invoices + receipts](docs/10_BENCHMARK_REPORT.md) | FATURA 999 + CORD 100 | no (FATURA) |
+
+Every figure in these carries the run directory it came from, and every run directory is
+re-scoreable for free — the response cache is keyed on image bytes, so no report costs money
+to reproduce.
+
 ## Layout
 
 ```
