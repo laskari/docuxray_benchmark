@@ -6,7 +6,7 @@
   "n_gt_rows": 0,
   "purpose": "the reported numbers",
   "selection": "every document \u2014 the corpus is small enough that sampling would only add variance",
-  "seed": 20260903,
+  "seed": 42,
   "doc_ids": [
     "000",
     "001",

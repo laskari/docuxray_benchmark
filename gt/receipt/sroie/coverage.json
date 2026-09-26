@@ -1,63 +1,71 @@
 {
   "dataset": "sroie",
   "doc_type": "receipt",
-  "n_docs": 626,
-  "n_clusters": 626,
+  "dataset_root": "/Users/xelpmoc/Documents/Xelp_work/DocuXray/Benchmark/sroie_data/SROIE_FULL",
+  "root_overridden": false,
+  "n_docs": 958,
+  "n_clusters": 958,
   "n_keysets": 2,
   "n_gt_line_item_rows": 0,
   "scoreable_paths": 5,
-  "headline_eligible_paths": 4,
+  "headline_eligible_paths": 5,
   "headline_bar": {
     "min_docs": 30,
     "min_distinct_values": 20
   },
   "exclusions": {
-    "GT value present but unparseable (date)": 621
+    "conflicting GT labels": 2,
+    "GT value present but unparseable (date)": 1
   },
   "paths": [
     {
       "path": "parties.seller.addressStructured",
-      "n_docs": 626,
-      "n_clusters": 626,
-      "distinct_gt_values": 291,
+      "n_docs": 957,
+      "n_clusters": 957,
+      "distinct_gt_values": 408,
       "absent_docs": 1,
       "headline_eligible": true,
+      "headline_bar_reason": null,
       "constant_across_clusters": false
     },
     {
       "path": "parties.seller.name",
-      "n_docs": 626,
-      "n_clusters": 626,
-      "distinct_gt_values": 236,
+      "n_docs": 957,
+      "n_clusters": 957,
+      "distinct_gt_values": 316,
       "absent_docs": 0,
       "headline_eligible": true,
+      "headline_bar_reason": null,
       "constant_across_clusters": false
     },
     {
       "path": "receiptInfo.txnDate",
-      "n_docs": 626,
-      "n_clusters": 626,
-      "distinct_gt_values": 493,
+      "n_docs": 958,
+      "n_clusters": 958,
+      "distinct_gt_values": 702,
       "absent_docs": 0,
       "headline_eligible": true,
+      "headline_bar_reason": null,
       "constant_across_clusters": false
     },
     {
       "path": "receiptInfo.txnDateISO",
-      "n_docs": 5,
-      "n_clusters": 5,
-      "distinct_gt_values": 4,
+      "n_docs": 957,
+      "n_clusters": 957,
+      "distinct_gt_values": 428,
       "absent_docs": 0,
-      "headline_eligible": false,
+      "headline_eligible": true,
+      "headline_bar_reason": null,
       "constant_across_clusters": false
     },
     {
       "path": "totals.totalIncludingTax",
-      "n_docs": 626,
-      "n_clusters": 626,
-      "distinct_gt_values": 448,
+      "n_docs": 958,
+      "n_clusters": 958,
+      "distinct_gt_values": 635,
       "absent_docs": 1,
       "headline_eligible": true,
+      "headline_bar_reason": null,
       "constant_across_clusters": false
     }
   ]

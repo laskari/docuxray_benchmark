@@ -12,7 +12,13 @@ paths:
   # NOTE 2026-09-03: the parent folder was renamed DocuXray_benchmark -> Benchmark, which left
   # this path dangling and would have failed every run at the pre-flight image check.
   dataset:        "../../Benchmark/FATURA_invoices_dataset"
-  dataset_sroie:  "../../Benchmark/sroie_data/SROIE"
+  # The FULL SROIE task-3 corpus, materialised by scripts/prepare_sroie_full.py: 958 documents
+  # under their ORIGINAL ICDAR ids, tagged with the original train/test split (621/337).
+  # It supersedes .../sroie_data/SROIE, which is the 626-file TRAIN split only, renumbered
+  # "000".."625" by the GitHub repo it came from. That root is left in place so runs reported
+  # against it stay reproducible; every one of its 621 distinct images is present here, and the
+  # response cache is keyed on image bytes, so nothing already paid for is paid for twice.
+  dataset_sroie:  "../../Benchmark/sroie_data/SROIE_FULL"
   # CORD-v2, materialised by scripts/prepare_cord_v2.py. One root holding all three splits:
   # <root>/{train,dev,test}/{images,annotations}. 800 / 100 / 100.
   dataset_cord:   "../../Benchmark/data/CORD_v2"

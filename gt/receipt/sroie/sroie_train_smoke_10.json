@@ -1,0 +1,27 @@
+{
+  "dataset": "sroie",
+  "doc_type": "receipt",
+  "split": "train",
+  "n_docs": 10,
+  "n_templates": 10,
+  "n_gt_rows": 0,
+  "purpose": "wiring gate, not a measurement",
+  "selection": "10 of 621 train documents, round-robin across line-item table size (none/single/small/medium/large), seed 20260907",
+  "seed": 20260907,
+  "strata": {
+    "none": 10
+  },
+  "excluded_from": null,
+  "doc_ids": [
+    "X51005433533",
+    "X51005441401",
+    "X51005442341",
+    "X51005447860",
+    "X51005676545",
+    "X51006008091",
+    "X51006334741",
+    "X51006466062",
+    "X51006619783",
+    "X51008123451"
+  ]
+}
