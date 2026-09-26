@@ -465,6 +465,91 @@ def normalise_address_compare(text) -> Optional[str]:
 
 ADDRESS_COMPONENT_ORDER = ("address", "city", "state", "postal_code", "country")
 ADDRESS_COMPONENT_ORDER_ALT = ("address", "postal_code", "city", "state", "country")
+#: Map contract 1.12, case A. The order most of the world outside the US prints, and the one
+#: every SROIE block uses: street, then CITY, then POSTCODE, then state.
+#:     "3rd Flr, Aeon Taman Maluri SC, Jln Jejaka, Taman Maluri, 55100 Kuala Lumpur"
+#: with city=CHERAS, postal_code=55100, state=KUALA LUMPUR renders correctly under this order
+#: and under neither of the two above. Measured on sroie_t500: +5 documents on its own.
+ADDRESS_COMPONENT_ORDER_MY = ("address", "city", "postal_code", "state", "country")
+
+ADDRESS_COMPONENT_ORDERS = (ADDRESS_COMPONENT_ORDER, ADDRESS_COMPONENT_ORDER_ALT,
+                            ADDRESS_COMPONENT_ORDER_MY)
+
+
+def _address_tokens_contain(needle: str, haystack: str) -> bool:
+    """True when `needle` appears in `haystack` as a CONTIGUOUS RUN OF WHOLE TOKENS.
+
+    Token-wise, not substring-wise, and the distinction is not academic: on SROIE a substring
+    test reads city "KL" as already present in a street containing "Klang" and drops it,
+    costing 11 documents that the token test keeps.
+    """
+    n, h = needle.split(), haystack.split()
+    if not n:
+        return True
+    return any(h[i:i + len(n)] == n for i in range(len(h) - len(n) + 1))
+
+
+def address_renderings(value) -> set:
+    """Every admissible way to render one addressStructured object as a comparable string.
+
+    Map contract 1.12 (Naveen, 2026-09-18). The ADDRESS rule already compared the merge under
+    TWO component orders, on the principle that the model should not be scored on which
+    component it filed each token in. This extends the same principle -- a SET of admissible
+    renderings, exact equality against each -- to cover the two ways the existing merge
+    misrepresented a CORRECT address on SROIE:
+
+      A  COMPONENT ORDER. Only US and postcode-first orders were tried. See
+         ADDRESS_COMPONENT_ORDER_MY.
+
+      B  DUPLICATION. Where the model spells the whole block out in `address` AND ALSO fills
+         `city` / `state` / `postal_code`, the merge appended each a second time:
+             address="13, JLN TASIK UTAMA 8, MEDAN NIAGA DAMAI SG BESI" city="KL" state="KL"
+             postal_code="57000"                       -> "... sg besi kl kl 57000"
+             ground truth                                 "... sg besi 57000 kl"
+         The address CONTENT is right and the merge alone made it wrong. So a rendering that
+         SKIPS any component already spelled out in `address` is admissible too.
+
+    Neither is a tolerance and neither is a similarity score: every rendering is compared for
+    exact equality, so a misread street, a dropped state or a transposed digit still fails all
+    of them. Measured on sroie_t500 (FINAL): 380 -> 415 of 499 documents, 35 newly correct and
+    NONE lost -- a lost document would mean a rendering had matched a DIFFERENT address, which
+    cannot happen when every rendering is a permutation of the same component values.
+
+    Returns normalised, comparison-ready strings (the caller does not normalise again).
+    """
+    if value is None or isinstance(value, _Absent):
+        return set()
+    if isinstance(value, str):
+        one = normalise_address_compare(value)
+        return {one} if one else set()
+    if not isinstance(value, dict):
+        return set()
+    out = set()
+    for order in ADDRESS_COMPONENT_ORDERS:
+        for dedupe in (False, True):
+            parts = []
+            for key in order:
+                piece = value.get(key)
+                if piece is None:
+                    continue
+                piece = str(piece).strip(" ,")
+                if not piece:
+                    continue
+                if dedupe and key != "address":
+                    # Skip a component already spelled out by what has been rendered so far --
+                    # whether that was `address` (doc 055: the street block already ends
+                    # "JOHOR BAHRU, JOHOR") or an earlier component (doc 065: city and state
+                    # BOTH hold "KL" and the page prints it once).
+                    norm = normalise_address_compare(piece) or ""
+                    so_far = normalise_address_compare(" ".join(parts)) or ""
+                    if norm and _address_tokens_contain(norm, so_far):
+                        continue
+                parts.append(piece)
+            rendering = normalise_address_compare(normalise_string(" ".join(parts))) if parts else None
+            if rendering:
+                out.add(rendering)
+    return out
+
 
 def merge_address_components(value, alt_order=False) -> Optional[str]:
     """Collapse an addressStructured object into one comparable address string.

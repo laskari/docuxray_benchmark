@@ -366,3 +366,77 @@ def test_zero_and_false_are_emissions():
     assert is_emitted(0.0)
     assert is_emitted(False)
     assert is_emitted({"originalValue": "0.00", "normalizedValue": 0.0})
+
+
+# --------------------------------------------------------------------------------------
+# Map contract 1.12 -- the admissible-rendering set for a merged address
+# --------------------------------------------------------------------------------------
+# Every case below is a REAL sroie_t500 document, named, where the address CONTENT was right
+# and the merge alone scored it wrong. Each is compared for EXACT equality against one of the
+# renderings -- none of these passes on a threshold.
+
+from core.normalize import address_renderings  # noqa: E402
+
+
+def test_1_12_duplicated_components_are_admissible():
+    """sroie doc 065: the whole block is in `address` AND repeated in city/state/postal."""
+    from core.matching import compare, MatchRule
+    pred = {"address": "13, JLN TASIK UTAMA 8, MEDAN NIAGA DAMAI SG BESI",
+            "city": "KL", "state": "KL", "postal_code": "57000", "country": None}
+    gt = "13, jln tasik utama 8 medan niaga damai sg besi 57000 kl"
+    assert compare(pred, gt, MatchRule.ADDRESS).exact
+
+
+def test_1_12_city_postcode_state_order_is_admissible():
+    """sroie doc 071: printed street, CITY, POSTCODE, state -- neither old order renders it."""
+    from core.matching import compare, MatchRule
+    pred = {"address": "3RD FLR, AEON TAMAN MALURI SC, JLN JEJAKA, TAMAN MALURI",
+            "city": "CHERAS", "state": "KUALA LUMPUR",
+            "postal_code": "55100", "country": None}
+    gt = "3rd flr, aeon taman maluri sc jln jejaka, taman maluri cheras, 55100 kuala lumpur"
+    assert compare(pred, gt, MatchRule.ADDRESS).exact
+
+
+def test_1_12_dedupe_is_token_wise_not_substring_wise():
+    """sroie doc 019: city 'KL' must NOT be dropped because the street contains 'Klang'."""
+    pred = {"address": "LOT 2685 JLN GENTING KLANG", "city": "KL",
+            "state": None, "postal_code": "53300", "country": None}
+    # 'kl' is a substring of 'klang' but not a whole token of it, so it is still rendered.
+    assert all("kl" in f.split() for f in address_renderings(pred)), address_renderings(pred)
+
+
+def test_1_12_cannot_forgive_a_misread():
+    """A wrong token fails every rendering -- the set is not a tolerance."""
+    from core.matching import compare, MatchRule
+    pred = {"address": "13, JLN TASIK UTAMA 9", "city": "KL",
+            "state": None, "postal_code": "57000", "country": None}
+    r = compare(pred, "13, jln tasik utama 8 57000 kl", MatchRule.ADDRESS)
+    assert not r.matched and not r.exact
+
+
+def test_1_12_renderings_are_permutations_of_the_same_values():
+    """No rendering can invent a token, which is why the fix cannot lose a document."""
+    pred = {"address": "1 A St", "city": "Markville", "state": "AK",
+            "postal_code": "58294", "country": "US"}
+    base = sorted("1 a st markville ak 58294 us".split())
+    for f in address_renderings(pred):
+        assert set(f.split()) <= set(base), f
+
+
+def test_1_12_comparison_forms_agree_with_the_verdict():
+    """The reported pred form must be the rendering the verdict came from, or review lies."""
+    from core.matching import comparison_forms, compare, MatchRule
+    pred = {"address": "13, JLN TASIK UTAMA 8, MEDAN NIAGA DAMAI SG BESI",
+            "city": "KL", "state": "KL", "postal_code": "57000", "country": None}
+    gt = "13, jln tasik utama 8 medan niaga damai sg besi 57000 kl"
+    p, t = comparison_forms(pred, gt, MatchRule.ADDRESS)
+    assert compare(pred, gt, MatchRule.ADDRESS).exact
+    assert p == t, (p, t)
+
+
+def test_1_12_fatura_split_address_is_unchanged():
+    """The FATURA case the two original orders were built for still scores exact."""
+    from core.matching import compare, MatchRule
+    split = {"address": "16424 Timothy Mission", "city": "Markville",
+             "state": "AK", "postal_code": "58294", "country": "US"}
+    assert compare(split, GT_BLOCK, MatchRule.ADDRESS).exact

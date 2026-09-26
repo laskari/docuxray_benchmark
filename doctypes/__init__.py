@@ -146,6 +146,20 @@ RECEIPT = DocTypeSpec(
     # Receipts use txnDate where invoices use issueDate.
     date_leaves=frozenset({"txnDate", "serviceDate"}),
     excluded_leaves=_COMMON_EXCLUDED,
+    # `name` carries a CONTAINMENT reading beside its exact one -- map contract 1.19. It is the
+    # one scored field the pipeline over-extracts on: 450 of its 476 non-exact instances on
+    # sroie_full958 are the annotated name present intact with extra text around it (the
+    # printed registration number, the outlet, the brand above the legal entity), against 15 of
+    # 160 on the address. The measurement is in core/matching.py above TEXT_SUPERSET.
+    #
+    # It selects MatchRule.TEXT_SUPERSET, NOT TEXT_CONTAINED. Both compute containment; only
+    # the latter also changes the leaf's `exact` normalisation (punctuation dropped), which is
+    # how an earlier version of this line moved a published exact figure by 0.94pp as a side
+    # effect of turning a second column on. TEXT_SUPERSET cannot do that.
+    #
+    # The ADDRESS rule computes its own containment and is not listed here. No doc type selects
+    # TEXT_CONTAINED today; that rule is kept because it is the right one for a merged target --
+    # a GT fact the pipeline splits across several fields -- which is what it was written for.
     contained_leaves=frozenset({"name"}),
     # ReceiptTotals.subtotal, .taxes and .otherCharges are LISTS on receipts where the invoice
     # equivalents are scalars. That is the single biggest structural difference between the two

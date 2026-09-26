@@ -384,6 +384,17 @@ def score_rows(gt_rows: Sequence[Any], pred_rows: Sequence[Any], *,
                 "state": "correct" if ok else "wrong",
                 "ok": ok, "score": best.score if best else 0.0,
                 "exact": bool(best.exact) if best else False,
+                # Contract 1.14, carried per cell so the line-items sheet can show it. NOTE
+                # `best` is chosen by (matched, score), which maximises the lenient verdict too
+                # for every threshold rule -- but for an all-or-nothing rule with no match the
+                # tie is broken by leaf order, so a lenient-only pass on a non-first leaf is
+                # not searched for. No row leaf uses such a rule today.
+                "ok_lenient": bool(best.lenient) if best else False,
+                # Contract 1.16, carried per cell on the same terms as the line above. No row
+                # leaf uses TEXT_CONTAINED today, so this equals `ok` on every current corpus;
+                # it is carried so a doc type that adds such a leaf reports it without a
+                # second change here.
+                "ok_contained": bool(best.contained) if best else False,
                 "gt_row": m.gt_index, "pred_row": m.pred_index,
                 "matched_leaf": best_leaf, "matched_on": m.matched_on,
                 "value_source": best.value_source if best else None,
@@ -402,5 +413,7 @@ def score_rows(gt_rows: Sequence[Any], pred_rows: Sequence[Any], *,
                             and all(row_exact_flags)),
         "n_cells": len(cells),
         "n_cells_correct": sum(1 for c in cells if c["ok"]),
+        "n_cells_lenient": sum(1 for c in cells if c["ok_lenient"]),
+        "n_cells_contained": sum(1 for c in cells if c["ok_contained"]),
     })
     return {"summary": summary, "cells": cells, "alignment": al}

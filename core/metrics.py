@@ -35,6 +35,7 @@ from core.matching import (                                              # noqa:
 import doctypes                                                          # noqa: E402
 from core.normalize import _Absent, is_emitted, numeric_from_field       # noqa: E402
 from registry import gt_dir as _gt_dir, dataset_for                    # noqa: E402
+from core.canonical import map_version_at_scoring_time            # noqa: E402
 
 BOOTSTRAP_ITERS = 2000
 HEADLINE_FLOOR = 20
@@ -123,6 +124,14 @@ def score_document(gt_rec, prediction: Dict[str, Any], rules, spec=None) -> List
             # The second verdict of contract 1.11. For a correct_null it is the same as `ok`:
             # a null the page agrees with is right under both criteria.
             "ok_convention": (bool(res.convention) if res is not None else ok),
+            # The third verdict of contract 1.14, carried on every row on the SAME terms as
+            # ok_convention: for a correct_null it equals `ok`, because a null the page agrees
+            # with is right under all three criteria and no tolerance is involved.
+            "ok_lenient": (bool(res.lenient) if res is not None else ok),
+            # The fourth verdict, contract 1.16, on the same terms as the two above: for a
+            # correct_null it equals `ok`, because a null the page agrees with is right under
+            # every criterion and nothing is being contained in anything.
+            "ok_contained": (bool(res.contained) if res is not None else ok),
             "value_source": res.value_source if res is not None else None,
             "no_tax": bool(gt_rec.meta.get("no_tax_label")),
         })
@@ -254,6 +263,10 @@ def aggregate_lists(summaries: List[Dict[str, Any]]) -> Dict[str, Any]:
         "table_exact_rate": (sum(1 for s in docs if s["table_exact"]) / len(docs)
                              if docs else None),
         "n_cells_scored": cells,
+        "cell_accuracy_lenient_on_matched_rows": (
+            sum(s.get("n_cells_lenient", 0) for s in docs) / cells if cells else None),
+        "cell_accuracy_contained_on_matched_rows": (
+            sum(s.get("n_cells_contained", 0) for s in docs) / cells if cells else None),
         "cell_accuracy_on_matched_rows": (sum(s["n_cells_correct"] for s in docs) / cells
                                           if cells else None),
         "note": ("Row recall and cell accuracy are independent measurements and must be read "
@@ -267,17 +280,24 @@ def aggregate_lists(summaries: List[Dict[str, Any]]) -> Dict[str, Any]:
 # aggregation with a CLUSTER bootstrap over templates
 # ---------------------------------------------------------------------------------------
 
-def _rate_convention(rows) -> Optional[float]:
-    """Convention-adjusted accuracy: the SAME denominator as `_rate(..., ACCURACY_*)`, counting
-    rows the convention-adjusted criterion calls correct (map contract 1.11).
+def _rate_flag(rows, key: str) -> Optional[float]:
+    """Accuracy under a SECOND criterion: the same denominator as `_rate(..., ACCURACY_*)`,
+    counting rows that criterion calls correct.
 
-    Same denominator is the whole point -- the two numbers differ only in the numerator, so the
-    gap between them is exactly the enumerated notation list and never a denominator change.
+    Same denominator is the whole point -- the criteria differ only in the NUMERATOR, so the
+    gap between any two of them is exactly the rule that widened it and never a denominator
+    change. `key` is "ok_convention" (contract 1.11), "ok_lenient" (contract 1.14) or
+    "ok_contained" (contract 1.16).
     """
     d = [r for r in rows if r["state"] in ACCURACY_DEN]
     if not d:
         return None
-    return sum(1 for r in d if r.get("ok_convention")) / len(d)
+    return sum(1 for r in d if r.get(key)) / len(d)
+
+
+def _rate_convention(rows) -> Optional[float]:
+    """Back-compatible alias kept because the name appears in review notes and scripts."""
+    return _rate_flag(rows, "ok_convention")
 
 
 def _rate(rows, numer, denom) -> Optional[float]:
@@ -302,7 +322,8 @@ RECALL_DEN, RECALL_NUM = ACCURACY_DEN, ACCURACY_NUM
 
 
 def cluster_bootstrap(rows, iters=BOOTSTRAP_ITERS, seed=20260901,
-                      convention: bool = False) -> Tuple[Optional[float], Optional[float]]:
+                      convention: bool = False,
+                      ok_key: Optional[str] = None) -> Tuple[Optional[float], Optional[float]]:
     """95% interval, resampling TEMPLATES with replacement. Documents within a template are
     not independent observations -- they are one layout rendered many times."""
     by_t = defaultdict(list)
@@ -316,7 +337,8 @@ def cluster_bootstrap(rows, iters=BOOTSTRAP_ITERS, seed=20260901,
     for _ in range(iters):
         pick = [rng.choice(templates) for _ in templates]
         pooled = [r for t in pick for r in by_t[t]]
-        v = _rate_convention(pooled) if convention else _rate(pooled, RECALL_NUM, RECALL_DEN)
+        key = ok_key or ("ok_convention" if convention else None)
+        v = _rate_flag(pooled, key) if key else _rate(pooled, RECALL_NUM, RECALL_DEN)
         if v is not None:
             samples.append(v)
     if len(samples) < 50:
@@ -337,7 +359,15 @@ def aggregate(rows, coverage, convention: bool = False) -> Dict[str, Any]:
             "n_docs": len(pr), "n_templates": len({r["template"] for r in pr}),
             "accuracy": _rate(pr, ACCURACY_NUM, ACCURACY_DEN),
             "recall": _rate(pr, ACCURACY_NUM, ACCURACY_DEN),     # alias, same number
-            "accuracy_convention": (_rate_convention(pr) if convention else None),
+            "accuracy_convention": (_rate_flag(pr, "ok_convention") if convention else None),
+            # Contract 1.14. Unlike the convention criterion this is NOT gated on a doc-type
+            # flag: it needs no per-corpus enumeration of notation differences, only the
+            # thresholds the rules already carry, so every doc type reports it.
+            "accuracy_lenient": _rate_flag(pr, "ok_lenient"),
+            # Contract 1.16. Reported on every doc type for the same reason as lenient: it
+            # needs no per-corpus enumeration, only the rule each field already carries. It
+            # differs from `accuracy` on TEXT_CONTAINED fields and on nothing else.
+            "accuracy_contained": _rate_flag(pr, "ok_contained"),
             "ci95": [lo, hi],
             "exact_rate": (sum(1 for r in pr if r["exact"] and r["state"] == "correct")
                            / max(sum(1 for r in pr if r["state"] in RECALL_DEN), 1)),
@@ -357,6 +387,12 @@ def aggregate(rows, coverage, convention: bool = False) -> Dict[str, Any]:
     conv_macro = [f["accuracy_convention"] for f in per_field
                   if f.get("accuracy_convention") is not None]
     clo, chi = cluster_bootstrap(rows, convention=True) if convention else (None, None)
+    len_macro = [f["accuracy_lenient"] for f in per_field
+                 if f.get("accuracy_lenient") is not None]
+    llo, lhi = cluster_bootstrap(rows, ok_key="ok_lenient")
+    con_macro = [f["accuracy_contained"] for f in per_field
+                 if f.get("accuracy_contained") is not None]
+    nlo, nhi = cluster_bootstrap(rows, ok_key="ok_contained")
     return {
         "micro_accuracy": micro, "micro_recall": micro,      # alias
         "micro_ci95": [lo, hi],
@@ -379,6 +415,16 @@ def aggregate(rows, coverage, convention: bool = False) -> Dict[str, Any]:
         "micro_ci95_convention": [clo, chi],
         "headline_micro_accuracy_convention": (_rate_convention(head_rows) if convention else None),
         "macro_accuracy_convention": (statistics.mean(conv_macro) if conv_macro else None),
+        # ---- the lenient criterion (contract 1.14), same denominators again ----
+        "micro_accuracy_lenient": _rate_flag(rows, "ok_lenient"),
+        "micro_ci95_lenient": [llo, lhi],
+        "headline_micro_accuracy_lenient": _rate_flag(head_rows, "ok_lenient"),
+        "macro_accuracy_lenient": (statistics.mean(len_macro) if len_macro else None),
+        # ---- the containment criterion (contract 1.16), same denominators once more ----
+        "micro_accuracy_contained": _rate_flag(rows, "ok_contained"),
+        "micro_ci95_contained": [nlo, nhi],
+        "headline_micro_accuracy_contained": _rate_flag(head_rows, "ok_contained"),
+        "macro_accuracy_contained": (statistics.mean(con_macro) if con_macro else None),
         "per_field": per_field,
     }
 
@@ -499,14 +545,44 @@ DEFAULT_SCORING = {
     # results.json so a number can never be read without knowing which side of the wire it came
     # from; it was a module constant deciding every numeric verdict silently.
     "numeric_source": "normalizedValue",
-    # INERT on this doc type and kept only for provenance. Since contract 1.7 no rule reaches
-    # the threshold branch -- every verdict in this benchmark is equality after normalisation.
+    # INERT since contract 1.17, and recorded so that a reader of an older results.json can see
+    # when it stopped mattering. It was the bar the LENIENT criterion used; lenient is now
+    # exact-after-store-number-removal and consults no threshold, so no published number on any
+    # rule depends on this value. The ANLS score is still computed and carried on each row for
+    # the report's "how close was the miss" column, where it decides nothing.
     "anls_threshold": 0.8,
     # The second criterion published beside `exact` (map contract 1.11), when the doc type
     # opts in. Its list is CLOSED and lives in core/matching.py: a printed currency symbol
     # against its ISO code, and a country written long. Recorded here so a convention-adjusted
     # number can never be read without knowing what it forgives.
     "convention_adjusted": ["currency symbol vs ISO code", "country written long"],
+    # The THIRD criterion, reported beside the other two on every doc type (map contract 1.17,
+    # replacing 1.14's ANLS bar). Recorded here so a lenient number can never be read without
+    # knowing what it forgives -- which is now ONE named thing rather than a similarity score.
+    # See core/matching.py, the STORE NUMBER block.
+    "lenient_criterion": {
+        "rule": "exact equality after BOTH sides shed every parenthesised group containing a "
+                "digit -- the printed business-registration number",
+        "text": "applied (seller/customer name, tax name)",
+        "address": "applied, on every admissible rendering; containment also passes",
+        "phone": "digits only, leading '+' kept",
+        "every other rule": "identical to exact -- no tolerance on numbers, dates or ids",
+        "no_threshold": "ANLS decides nothing on any rule since contract 1.17",
+    },
+    # The FOURTH criterion (map contract 1.16), recorded for the same reason as the third: a
+    # containment number must never be read without knowing what it forgives. It forgives
+    # text AROUND the value and nothing INSIDE it, on one rule only.
+    "containment_criterion": {
+        "rule": "the ground truth appears inside the prediction verbatim and unbroken, matched "
+                "on token boundaries (not raw substring), punctuation dropped",
+        "address": "applied, against every admissible rendering of the five components",
+        "text_superset": "applied -- the leaves a doc type declares in contained_leaves",
+        "every other rule": "identical to exact",
+        "scope_note": "the fields the pipeline OVER-EXTRACTS on, measured rather than assumed "
+                      "(contract 1.19): seller.name and addressStructured on receipts.",
+        "cannot_see": "arbitrary extra text on either side of the value -- it answers 'is the "
+                      "right answer in there, unbroken', never 'is this the answer'",
+    },
     "judge_baseline_arm": "RAW_POSTPROCESSED",
     "judge_detector_arm": "RAW",
     "require_equal_arm_denominators": True,
@@ -721,7 +797,8 @@ def score_run(run_dir: pathlib.Path, doc_type: str | None = None,
     out: Dict[str, Any] = {
         "run_id": manifest["run_id"], "manifest": manifest,
         "n_documents_scored": n_ok,
-        "field_map_version": manifest.get("field_map_version"),
+        "field_map_version": (map_version_at_scoring_time(spec.name, dataset)
+                              or manifest.get("field_map_version")),
         "scoring": policy,
         "arm_denominators": sizes,
         "arm_denominators_equal": len(set(sizes.values())) <= 1,
@@ -831,6 +908,13 @@ def render(r: Dict[str, Any]) -> str:
          f"models {m['models']['extraction']} / {m['models']['judge']} · "
          f"git {m.get('git')} · cost ${m.get('total_cost_usd', 0):.4f}", "",
          _denominator_line(r), "",
+         "The **accuracy** column is the EXACT criterion and is what this benchmark publishes; "
+         "`conv-adj` (contract 1.11), `contains` (contract 1.16) and `lenient` (contract "
+         "1.14) are second readings of the "
+         "same comparisons on the same denominators, never a replacement. A second criterion "
+         "that agrees with exact on every row shows `=`. The trailing `exact` column is a "
+         "different statistic — the share of rows the policy called correct that were exact "
+         "after normalisation — and is 100% under `match_policy: exact` by construction.", "",
          f"dataset **{m.get('dataset') or 'unspecified'}** · match policy "
          f"**{(r.get('scoring') or {}).get('match_policy')}** · numerics scored on "
          f"**{(r.get('scoring') or {}).get('numeric_source')}** · "
@@ -855,6 +939,33 @@ def render(r: Dict[str, Any]) -> str:
                   f"closed notation list of map contract 1.11 — a printed currency symbol "
                   f"against its ISO code, and a country written long. Nothing else, and no "
                   f"threshold anywhere.)*"]
+        if a.get("micro_accuracy_contained") is not None:
+            nc = a.get("micro_ci95_contained") or [None, None]
+            ncs = f" [{nc[0]:.3f}, {nc[1]:.3f}]" if nc[0] is not None else ""
+            ngap = (a["micro_accuracy_contained"] - (a["micro_accuracy"] or 0)) * 100
+            L += [f"- **contains** micro **{_pct(a['micro_accuracy_contained'])}**{ncs} · "
+                  f"headline {_pct(a['headline_micro_accuracy_contained'])} · macro "
+                  f"{_pct(a['macro_accuracy_contained'])}  *(same denominators, +{ngap:.1f}pt. "
+                  f"Map contract 1.16: the ground truth appears in the output VERBATIM AND "
+                  f"UNBROKEN, on token boundaries — no threshold anywhere. Only "
+                  f"text_contained fields can differ from exact; numbers, dates, addresses, "
+                  f"identifiers and enums are untouched. It forgives extra text AROUND the "
+                  f"value and nothing INSIDE it, so it answers \'did the output emit the "
+                  f"value intact\' where exact answers \'and nothing else\'.)*"]
+        if a.get("micro_accuracy_lenient") is not None:
+            lc = a.get("micro_ci95_lenient") or [None, None]
+            lcs = f" [{lc[0]:.3f}, {lc[1]:.3f}]" if lc[0] is not None else ""
+            gap = (a["micro_accuracy_lenient"] - (a["micro_accuracy"] or 0)) * 100
+            L += [f"- **lenient** micro **{_pct(a['micro_accuracy_lenient'])}**{lcs} · "
+                  f"headline {_pct(a['headline_micro_accuracy_lenient'])} · macro "
+                  f"{_pct(a['macro_accuracy_lenient'])}  *(same denominators, +{gap:.1f}pt. "
+                  f"Map contract 1.14: text and address pass at ANLS >= "
+                  f"{(r.get('scoring') or {}).get('anls_threshold')}, text_contained at GT "
+                  f"token recall >= 0.9, phone on digits alone; numbers, dates, identifiers "
+                  f"and enums are unchanged. text_contained CANNOT detect over-extraction, so "
+                  f"where a field uses it the lenient figure answers \'did the model read the "
+                  f"value\' and the exact one answers \'did it emit the value and nothing "
+                  f"else\'.)*"]
         L += [
               f"- correct-null rate {_pct(a['correct_null_rate'])}  *(own line, never a headline)*",
               f"- hallucinations (emitted where GT says absent): **{a['hallucination_count']}**"
@@ -865,15 +976,21 @@ def render(r: Dict[str, Any]) -> str:
             L += [f"- no-tax slice: all docs {_pct(a['no_tax_slice']['all_docs_recall'])} vs "
                   f"taxed only **{_pct(a['no_tax_slice']['taxed_only_recall'])}**", ""]
         L += [
-              "| field | rule | n | tmpl | accuracy | conv-adj | 95% CI | exact | halluc | headline |",
-              "|---|---|--:|--:|--:|--:|--|--:|--:|:--:|"]
+              "| field | rule | n | tmpl | accuracy | conv-adj | contains | lenient "
+              "| 95% CI | exact | halluc | headline |",
+              "|---|---|--:|--:|--:|--:|--:|--:|--|--:|--:|:--:|"]
         for f in a["per_field"]:
             lo, hi = f["ci95"]
-            cv = f.get("accuracy_convention")
-            cvs = "—" if cv is None else (_pct(cv) if abs(cv - (f['accuracy'] or 0)) > 1e-12
-                                          else "=")
+            # "=" rather than a repeated percentage, so the eye goes straight to the fields
+            # where a second criterion actually differs from the exact one.
+            def _second(v):
+                if v is None:
+                    return "—"
+                return _pct(v) if abs(v - (f["accuracy"] or 0)) > 1e-12 else "="
             L.append(f"| `{f['path']}` | {f['rule']} | {f['n_docs']} | {f['n_templates']} | "
-                     f"{_pct(f['accuracy'])} | {cvs} | "
+                     f"{_pct(f['accuracy'])} | {_second(f.get('accuracy_convention'))} | "
+                     f"{_second(f.get('accuracy_contained'))} | "
+                     f"{_second(f.get('accuracy_lenient'))} | "
                      f"{f'{lo:.2f}–{hi:.2f}' if lo is not None else '—'} | "
                      f"{_pct(f['exact_rate'])} | {f['hallucinations']} | "
                      f"{'yes' if f['headline_eligible'] else '**no**'} |")
@@ -895,7 +1012,9 @@ def render(r: Dict[str, Any]) -> str:
                   f"- tables fully correct (no row missed, none invented, every cell right): "
                   f"**{f2(li['table_exact_rate'])}**",
                   f"- cell accuracy over ALIGNED rows only: {f2(li['cell_accuracy_on_matched_rows'])} "
-                  f"({li['n_cells_scored']} cells)", "",
+                  f"({li['n_cells_scored']} cells) · contains "
+                  f"{f2(li.get('cell_accuracy_contained_on_matched_rows'))} · lenient "
+                  f"{f2(li.get('cell_accuracy_lenient_on_matched_rows'))}", "",
                   "Read row recall and cell accuracy together. Cell accuracy is computed only "
                   "over rows that aligned, so dropping a difficult row RAISES it — the two "
                   "numbers are only meaningful side by side, and `table_exact` is the one that "

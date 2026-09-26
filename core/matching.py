@@ -17,7 +17,7 @@ sys.path.insert(0, str(pathlib.Path(__file__).resolve().parent.parent))
 
 from core.normalize import (  # noqa: E402
     ABSENT, _Absent, anls, normalise_address, normalise_date, normalise_money,
-    merge_address_components, normalise_address_compare, normalise_phone,
+    merge_address_components, address_renderings, normalise_address_compare, normalise_phone,
     normalise_phone_compare, normalise_string, numeric_from_field,
     numeric_parse_disagreement, token_f1,
 )
@@ -87,6 +87,7 @@ class MatchRule(str, Enum):
     EMAIL = "email"
     CURRENCY = "currency"
     TEXT_CONTAINED = "text_contained"   # GT text found across several prediction fields
+    TEXT_SUPERSET = "text_superset"     # TEXT, plus a containment reading -- see below
     CHARGE_LABEL = "charge_label"       # a charge row's label: a tax name plus a printed rate
 
 
@@ -126,6 +127,209 @@ def _apply_policy(res: "MatchResult") -> "MatchResult":
         res.matched = False
         res.reason = res.reason or f"not exact (score {res.score:.3f})"
     return res
+
+
+# ---------------------------------------------------------------------------------------
+# THE LENIENT CRITERION -- map contract 1.14 (Naveen, 2026-09-18)
+# ---------------------------------------------------------------------------------------
+# A THIRD number, published beside the other two on the same denominators, because "exact"
+# and "lenient" answer different questions and a single figure cannot carry both:
+#
+#   exact       Did the output reproduce the value as the document states it?
+#   lenient     Did the output identify the right value, allowing the tolerance published
+#               document-AI work uses for free text (ANLS >= 0.8, token recall >= 0.9)?
+#
+# Exact is what the benchmark publishes and nothing here changes it. `matched`, `exact`,
+# every per-field accuracy and every interval are computed from the same code as before; the
+# lenient verdict is carried alongside and aggregated into its own keys. A run scored before
+# this contract and rescored after it must produce byte-identical exact numbers, and
+# tests/test_matching.py::test_1_14_lenient_never_moves_the_exact_verdict checks that.
+#
+# WHAT LENIENT ADMITS, rule by rule. Four rules can separate it from exact; all others set
+# lenient == exact, so a number, a date, an identifier, an enum, an email and a charge label
+# score identically under both criteria and no tolerance reaches them.
+#
+#   TEXT             ANLS >= 0.8 on the normalised strings.
+#   ADDRESS          ANLS >= 0.8 on the CLOSEST admissible rendering (contract 1.12).
+#   TEXT_CONTAINED   token recall of the GT >= 0.9 within the merged prediction.
+#   PHONE            digits only, with a leading '+' (normalise_phone) rather than the
+#                    printed form (normalise_phone_compare).
+#
+# WHAT IT COSTS, stated because the lenient number is the one that will be quoted:
+#
+#   * ANLS is a string-similarity score, so it forgives a wrong CHARACTER in proportion to
+#     the length of the string. On a long address block a transposed postcode digit or a
+#     dropped unit number scores ~0.98 and passes. Lenient therefore cannot answer "is this
+#     address correct enough to post a letter to"; exact can.
+#   * TEXT_CONTAINED is asymmetric and CANNOT DETECT OVER-EXTRACTION at all. On SROIE's
+#     parties.seller.name this is the whole difference: the model appending the printed
+#     registration number ("99 SPEED MART S/B" -> "99 speed mart s b 519537 x") fails exact
+#     and passes lenient, and 232 of that field's 308 exact failures are of exactly that
+#     shape. The lenient figure for seller.name answers "did it READ the name", the exact one
+#     answers "did it emit the name AND NOTHING ELSE". Both are worth knowing; neither is a
+#     substitute for the other, and quoting one as the model's accuracy without saying which
+#     is a misreport.
+#
+# NOT THE SAME AS `match_policy: threshold`. That knob REPLACES the headline verdict with a
+# thresholded one, and since contracts 1.6/1.7 it is inert for every headline-eligible rule
+# anyway (TEXT and ADDRESS return before _apply_policy). This contract adds a second column
+# and changes no headline. ANLS_THRESHOLD is now read by the lenient verdict on every run, so
+# --anls-threshold moves the lenient column and only that column.
+
+# ---------------------------------------------------------------------------------------
+# THE CONTAINMENT CRITERION -- map contract 1.16 (Claude draft 2026-09-18, pending sign-off)
+# ---------------------------------------------------------------------------------------
+# A FOURTH number, asked for directly: "check whether the ground truth text is a substring of
+# the extracted text; if the GT is a full substring of the extraction, consider it a match."
+#
+#   exact       Did the output emit the value and NOTHING ELSE?
+#   contained   Did the output emit the value INTACT, possibly with other text around it?
+#   lenient     Did the output identify the value, allowing the published tolerance?
+#
+# WHY IT IS NOT REDUNDANT WITH LENIENT, even though on SROIE it lands on the same figure.
+# TEXT_CONTAINED's lenient verdict is token-set RECALL at 0.9. That bar passes a prediction
+# that holds 90% of the ground-truth tokens, in any order, anywhere -- so "SDN BHD RESTORAN
+# WAN" passes against "RESTORAN WAN SHENG SDN BHD" on recall alone. Containment cannot: it
+# requires EVERY ground-truth token, IN ORDER, WITH NOTHING INTERLEAVED. It is therefore a
+# strictly stronger claim, and where the two agree that agreement is itself the finding --
+# see the measurement in the changelog.
+#
+# WHAT IT STILL CANNOT SEE. Containment is asymmetric in exactly the way exact is not: it
+# forgives arbitrary text on either side of the value. "99 SPEED MART S/B 519537 X" contains
+# "99 SPEED MART S/B" and passes; so would a prediction that glued two different companies
+# together. It answers "is the right answer in there, unbroken", never "is this the answer".
+# Quoting it as the model's accuracy without that sentence is a misreport.
+#
+# ON TOKEN BOUNDARIES, NOT RAW CHARACTERS, and this is a deliberate choice rather than an
+# implementation detail. A raw `truth in prediction` substring test matches ACROSS word
+# boundaries: a ground truth of "MART" is a substring of "SUPERMARKET", and "BHD" of "ABHDX".
+# Those are not the model emitting the value; they are a coincidence of spelling. Comparing
+# token RUNS keeps the promise the sentence "the GT is a full substring of the extraction"
+# is actually making. It also preserves the LADDER -- a contiguous token run means every GT
+# token is present, so token recall is 1.0 and lenient necessarily passes, whereas raw
+# substring can pass while lenient FAILS ("mart" inside "supermarket" has recall 0.0) and
+# would have broken exact <= contained <= lenient. Measured on sroie_full958: the two
+# readings agree on all 957 instances in all three arms, so the boundary rule costs nothing
+# here and protects against the corpus where it would.
+#
+# Normalisation is the SAME one TEXT_CONTAINED already uses for its other verdicts
+# (normalise_string(..., drop_punct=True)), so the criteria differ in the comparison and not
+# in what they are comparing.
+
+
+# ---------------------------------------------------------------------------------------
+# THE STORE NUMBER -- what the LENIENT criterion removes, and nothing else.
+# ---------------------------------------------------------------------------------------
+# Since map contract 1.17 lenient is NOT a similarity bar. It is exact equality after both
+# sides shed ONE kind of printed scaffolding: the business-registration number a Malaysian
+# receipt prints beside the trading name. ANLS decides nothing anywhere any more.
+#
+# WHY A REGISTRATION NUMBER IS SCAFFOLDING AND NOT PART OF THE NAME. SROIE's ground truth
+# records the trading name ("SWC ENTERPRISE SDN BHD"); the page prints the name followed by
+# the registrar's number ("SWC ENTERPRISE SDN BHD (1125830-V)"). Both are on the document and
+# the model is right about both. Which of the two the annotator chose to store is a
+# convention of the dataset, not a fact about the receipt -- the same reason an amount is
+# compared at 2dp rather than as printed and an address after its separators collapse.
+#
+# THE RULE: a parenthesised group that contains a DIGIT is removed from both sides. That is
+# the whole rule, and it is deliberately shaped by what the digit does rather than by the
+# registration formats seen so far -- the corpus prints at least six of those:
+#
+#     (1125830-V)   (JM0352019-K)   (SA0264195-T)      bare, and state-prefixed
+#     (CO.REG :704427-T )           (Company No 559208-M)   (CO NO. SA0345444-K)   labelled
+#     (139386 X)    (8199K)         (LLP0007299-LGN)   space-separated, unseparated, LLP
+#
+# A narrower rule keyed on `<digits>-<char>` catches 177 of the 261 mismatches this one
+# resolves and misses every labelled and space-separated variant, which is why the digit test
+# is the one that shipped.
+#
+# WHAT IT MUST NOT TOUCH, and does not: a parenthetical that is part of the name carries no
+# digit, so the rule cannot reach it --
+#
+#     AEON CO. (M) BHD      GARDENIA BAKERIES (KL) SDN BHD      THE STORE (MALAYSIA) SDN BHD
+#     BOOK TA .K (TAMAN DAYA) SDN BHD
+#
+# Measured over all 958 documents in all three arms: the rule resolves 261 seller.name
+# mismatches and breaks ZERO existing exact matches. That second number is the one that makes
+# it publishable -- a lenient criterion that can turn a match into a miss is not a rung of a
+# ladder. tests/test_lenient.py holds both as standing checks.
+#
+# SCOPE: the TEXT and ADDRESS rules, which is seller.name and addressStructured on this
+# corpus. No number, date, identifier, enum or charge label consults it, so a lenient figure
+# can never mean a wrong total was forgiven.
+_STORE_NUMBER_RE = re.compile(r"\(\s*[^()]*\d[^()]*\)")
+
+
+def strip_store_number(text: Optional[str]) -> Optional[str]:
+    """Remove every parenthesised group containing a digit, then collapse the seam.
+
+    Whitespace is collapsed afterwards because the removal leaves a double space where the
+    group sat ("ASIA MART  " -> "ASIA MART"), and the caller compares normalised strings.
+    """
+    if not isinstance(text, str):
+        return text
+    return re.sub(r"\s+", " ", _STORE_NUMBER_RE.sub(" ", text)).strip()
+
+
+# ---------------------------------------------------------------------------------------
+# TEXT_SUPERSET -- substring matching for the ONE field that over-extracts (contract 1.19)
+# ---------------------------------------------------------------------------------------
+# Asked for directly: "for which field we are generating extra text/output comparing with GT,
+# for that field I want to have substring matching." So the field was MEASURED rather than
+# assumed. Every non-exact instance of every scored path on sroie_full958, arm FINAL,
+# classified by whether the ground truth is a contiguous token run of the prediction:
+#
+#     field                               non-exact   GT INSIDE prediction   other
+#     parties.seller.name                       476            450  (94.5%)      26
+#     parties.seller.addressStructured          160             15  ( 9.4%)     145
+#     receiptInfo.txnDate                        12              4                 8
+#     receiptInfo.txnDateISO                      5              0                 5
+#     totals.totalIncludingTax                   10              1                 9
+#
+# One field over-extracts, by two orders of magnitude in COUNT. `parties.seller.name` is where
+# the pipeline emits the registered name PLUS something else -- the printed registration number,
+# the outlet, the brand above the legal entity -- and 450 of its 476 misses are that, not a
+# misreading. The last three rows are diagnostic only: DATE_RAW and NUMERIC compute no
+# containment verdict, so eligibility is DECLARED per rule and never inferred from this table.
+#
+# WHY THIS IS A SEPARATE RULE AND NOT A RETURN TO TEXT_CONTAINED. Containment on this leaf used
+# to be delivered by routing it to MatchRule.TEXT_CONTAINED, and that rule computes `exact`
+# with punctuation DROPPED while TEXT keeps it. So the routing decided two things at once: it
+# turned the containment column on, and it quietly moved the leaf's EXACT number by 0.94pp
+# across 9 documents ("MR. D.I.Y." against an annotated "MR. D. I. Y."). A criterion must not
+# be able to move the headline it is published beside. TEXT_SUPERSET is TEXT in every respect
+# -- same normalisation, same `exact`, same store-number lenient -- with one extra verdict
+# computed. Turning it on or off cannot change an exact figure, and tests/test_containment.py
+# asserts exactly that.
+#
+# WHAT IT FORGIVES, and it is a lot: containment is asymmetric. "PETRON BKT LANJAN SB ALSERKAM
+# ENTERPRISE" contains an annotated "PETRON BKT LANJAN SB" and passes, and so would a
+# prediction that glued two companies together. It answers "is the right answer in there,
+# unbroken", never "is this the answer". That is why `exact` is published beside it and never
+# replaced by it, and why §5.1 of the SROIE report partitions the field rather than quoting one
+# number for it.
+
+
+def _strip_address_store_numbers(value):
+    """`strip_store_number` applied through an address's shape.
+
+    An address reaches compare() either as the GT's flat block or as the model's five-component
+    object, and the lenient criterion has to remove the registration number from both before
+    they are merged -- stripping only after the merge would work too, but the merge is what
+    address_renderings() does internally, so the strip has to happen on the way in.
+    """
+    if isinstance(value, dict):
+        return {k: strip_store_number(v) for k, v in value.items()}
+    return strip_store_number(value)
+
+
+def _contains_token_run(pred_tokens: List[str], gt_tokens: List[str]) -> bool:
+    """Do the ground-truth tokens appear in the prediction contiguously and in order?"""
+    if not gt_tokens:
+        return True
+    n = len(gt_tokens)
+    return any(pred_tokens[i:i + n] == gt_tokens
+               for i in range(len(pred_tokens) - n + 1))
 
 
 _ADDRESS_HINT = re.compile(r"addressStructured(\.address)?$")
@@ -229,7 +433,7 @@ def rule_for(path: str, declared_type: str, spec=None) -> MatchRule:
     if leaf in spec.identifier_leaves:
         return MatchRule.IDENTIFIER
     if hasattr(spec, 'contained_leaves') and leaf in spec.contained_leaves:
-        return MatchRule.TEXT_CONTAINED
+        return MatchRule.TEXT_SUPERSET
     return MatchRule.TEXT
 
 
@@ -258,6 +462,20 @@ class MatchResult:
     # reading of the same comparison, not a fallback: `matched` is computed and reported exactly
     # as before, and no threshold is involved anywhere (map contract 1.11).
     convention: bool = False
+    # The LENIENT verdict -- map contract 1.14. True when the two sides state the same fact
+    # under the document-AI standard tolerance for FREE TEXT, which is a similarity bar and
+    # not an enumerated list. Never weaker than `matched` or `convention`, enforced in
+    # compare(); the three verdicts are a ladder, exact <= convention <= lenient. Only four
+    # rules can separate lenient from exact -- TEXT, ADDRESS, TEXT_CONTAINED, PHONE -- and
+    # every other rule sets it equal. See `LENIENT_CRITERION` below for what each one admits
+    # and what it costs.
+    lenient: bool = False
+    # The CONTAINMENT verdict -- map contract 1.16. True when the ground truth appears inside
+    # the prediction VERBATIM AND UNBROKEN, on token boundaries. A rung of the same ladder,
+    # sitting between exact and lenient: exact <= contained <= lenient, enforced in compare().
+    # Only TEXT_CONTAINED can separate it from exact; every other rule sets it equal, so a
+    # containment figure can never mean a number, a date or an id was forgiven.
+    contained: bool = False
 
     def __bool__(self) -> bool:
         return self.matched
@@ -279,18 +497,33 @@ def _both_empty(a, b) -> Optional[MatchResult]:
 def compare(prediction: Any, truth: Any, rule: MatchRule) -> MatchResult:
     """Compare one predicted value against one GT value under the given rule.
 
-    Returns BOTH verdicts of contract 1.11 on one result: `matched` is the exact criterion,
-    unchanged and computed exactly as before; `convention` is the convention-adjusted reading.
-    Only the two rules that carry a notation difference (CURRENCY, ADDRESS) can ever separate
-    them -- every other rule sets them equal, enforced below rather than trusted to each branch.
+    Returns all THREE verdicts on one result, each a different question about the same pair:
+
+        matched     EXACT after normalisation -- contract 1.6/1.7. Unchanged and computed
+                    exactly as before. This is what is published as "accuracy".
+        convention  contract 1.11. Exact, plus a CLOSED ENUMERATED list of notation
+                    differences (a currency symbol against its ISO code, a country written
+                    long). No threshold anywhere.
+        contained   contract 1.16. Exact, plus extra text AROUND a ground truth that is
+                    reproduced verbatim and unbroken. No threshold -- see
+                    CONTAINMENT_CRITERION.
+        lenient     contract 1.14. Exact, plus the document-AI standard tolerance on free
+                    text (ANLS >= 0.8, token recall >= 0.9). A THRESHOLD, and therefore a
+                    different kind of claim -- see LENIENT_CRITERION.
+
+    The four are a LADDER: exact <= convention <= lenient and exact <= contained <= lenient,
+    enforced here rather than trusted to each branch, so a new rule cannot silently report a
+    LOWER second or third number by forgetting to set a field, and so the gap between any two
+    is always attributable to the one rule that widened it. `convention` and `contained` are
+    both above exact and both below lenient, and are not ordered against each other: they
+    widen different rules and never the same one.
     """
     res = _compare(prediction, truth, rule)
     if res.matched:
-        # The invariant that makes the two numbers comparable: convention-adjusted is never
-        # weaker than exact, so the gap between them is always the enumerated list and nothing
-        # else. Enforced in one place so a new rule cannot silently report a LOWER second
-        # number by forgetting to set the field.
         res.convention = True
+        res.contained = True
+    if res.matched or res.convention or res.contained:
+        res.lenient = True
     return res
 
 
@@ -368,6 +601,15 @@ def _compare(prediction: Any, truth: Any, rule: MatchRule) -> MatchResult:
             score=recall,
             token_f1=token_f1(p_norm, t_norm),
             reason="" if recall >= 0.9 else f"token recall {recall:.2f}",
+            # Captured BEFORE _apply_policy demotes `matched`, because this IS the lenient
+            # criterion for this rule: every GT token present somewhere in the prediction.
+            # It cannot detect over-extraction -- see LENIENT_CRITERION.
+            lenient=recall >= 0.9,
+            # Contract 1.16, and the only rule that computes this. Stricter than the line
+            # above: not "the tokens are all in there somewhere" but "the ground truth is in
+            # there INTACT" -- same order, nothing interleaved. Also captured before
+            # _apply_policy, for the same reason. See CONTAINMENT_CRITERION.
+            contained=_contains_token_run(p_norm.split(), gt_tokens),
         )
         return _apply_policy(res)
 
@@ -376,7 +618,11 @@ def _compare(prediction: Any, truth: Any, rule: MatchRule) -> MatchResult:
         # printed number verbatim (map rule 1.2), so brackets, hyphens and slashes are part of
         # the value and are compared. See normalise_phone_compare for the measured cost.
         ok = normalise_phone_compare(prediction) == normalise_phone_compare(truth)
-        return MatchResult(ok, ok, float(ok))
+        # Lenient drops to DIGITS (plus a leading '+'), which is the older rule this one
+        # replaced: it answers "did the model read the right number?" where exact answers
+        # "did it reproduce what is printed?". Both are real questions about a phone number.
+        return MatchResult(ok, ok, float(ok),
+                           lenient=normalise_phone(prediction) == normalise_phone(truth))
 
     if rule is MatchRule.EMAIL:
         ok = normalise_string(prediction) == normalise_string(truth)
@@ -427,9 +673,10 @@ def _compare(prediction: Any, truth: Any, rule: MatchRule) -> MatchResult:
     #             the tokens themselves.
     #
     # Consequence, stated because it is easy to miss: after 1.7 no headline-eligible key consults
-    # ANLS_THRESHOLD, so `match_policy: threshold` and `--anls-threshold` are inert for every
-    # published number and exact == lenient everywhere. The knobs remain only for TEXT_CONTAINED
-    # (noteText, barred from headlines) and for the ad-hoc probes in scripts/.
+    # ANLS_THRESHOLD for its VERDICT, so `match_policy: threshold` is inert for every published
+    # number. Since contract 1.14 the threshold is not unused -- it decides the LENIENT column,
+    # which is reported beside the exact one and never replaces it, so --anls-threshold moves
+    # that column alone. `match_policy` remains inert for TEXT and ADDRESS by design.
     if rule is MatchRule.ADDRESS:
         # Merge the model's five components into one string (Q2, Naveen 2026-09-01) and compare
         # against the whole GT block. The merge joins on whitespace (Naveen 2026-09-09).
@@ -441,34 +688,94 @@ def _compare(prediction: Any, truth: Any, rule: MatchRule) -> MatchResult:
         # scores every merged address wrong (measured: 0.00% exact). Everything else stays:
         # '-', '/', '#', '&' and brackets are part of an address, and collapsing them let
         # "1851-a" and "1851 a" score as the same place. See normalise_address_compare.
+        # Map contract 1.12: the prediction is rendered every admissible way -- three component
+        # orders x {as emitted, de-duplicated} -- and each is compared for EXACT equality.
+        # address_renderings() carries the reasoning and the measurement.
+        t = normalise_address_compare(merge_address_components(truth))
+        forms = address_renderings(prediction)
+
+        exact = (t or "") in forms if t else not forms
+        score = max((anls(f, t) for f in forms), default=anls(None, t))
+        # Report the rendering the verdict was actually taken from: the matching one if there
+        # is one, otherwise the closest, so a failure is shown at its best light.
+        p = (t if exact else
+             max(forms, key=lambda f: anls(f, t), default=None))
+        # Kept for the convention test below, which is defined on a single merged pair.
         p_us = normalise_address_compare(merge_address_components(prediction, alt_order=False))
         p_alt = normalise_address_compare(merge_address_components(prediction, alt_order=True))
-        t = normalise_address_compare(merge_address_components(truth))
-        
-        exact = p_us == t or p_alt == t
-        score = max(anls(p_us, t), anls(p_alt, t))
-        p = p_us if anls(p_us, t) >= anls(p_alt, t) else p_alt
         # Contract 1.11, case B: the merged blocks differ by the country token alone. Tested on
         # BOTH component orderings, and only ever on one token -- a second difference anywhere
         # in the block fails the test, so this cannot forgive a misread street or a dropped
         # state code.
         convention = exact or _convention_address(p_us, t) or _convention_address(p_alt, t)
+        # CONTAINMENT, contract 1.16 as amended by 1.18: the ground-truth block appears inside
+        # one admissible rendering of the prediction VERBATIM AND UNBROKEN. Address is now the
+        # only rule that computes this, because it is the only field where the pipeline
+        # legitimately emits more than the annotator stored -- a receipt prints the full
+        # postal block and SROIE's ground truth keeps a prefix of it.
+        #
+        # Token runs, not raw substrings, for the reason CONTAINMENT_CRITERION gives: a raw
+        # `truth in prediction` test matches across word boundaries and would score "MART"
+        # inside "SUPERMARKET" as the model emitting the value.
+        #
+        # Every rendering is tried, not just the closest, so containment inherits contract
+        # 1.12's promise that the model is not scored on which component it filed a token in.
+        t_tokens = (t or "").split()
+        contained = exact or any(_contains_token_run(f.split(), t_tokens) for f in forms)
+        # LENIENT, contract 1.17: containment, plus exact equality once both sides shed a
+        # printed registration number. No ANLS -- see strip_store_number.
+        t_bare = normalise_address_compare(
+            merge_address_components(_strip_address_store_numbers(truth)))
+        bare_forms = address_renderings(_strip_address_store_numbers(prediction))
+        lenient = contained or ((t_bare or "") in bare_forms if t_bare else not bare_forms)
     else:
         p, t = normalise_string(prediction), normalise_string(truth)
         exact = p == t
         score = anls(p, t)
-    if rule in (MatchRule.TEXT, MatchRule.ADDRESS):
+        # Contract 1.19: a leaf the doc type declares in `contained_leaves` also reports a
+        # CONTAINMENT reading -- the ground truth present in the prediction as a contiguous
+        # token run, with extra text around it. Everything else about the rule is TEXT's,
+        # `exact` included, which is the whole reason this is a separate rule rather than a
+        # return to TEXT_CONTAINED: that rule computes `exact` with punctuation DROPPED, so
+        # routing a leaf through it silently moves the leaf's exact number too. See the
+        # TEXT_SUPERSET block above compare().
+        #
+        # The containment comparison DOES drop punctuation, while `exact` above does not, and
+        # that asymmetry is deliberate. Containment asks "is the ground truth in there,
+        # unbroken"; a receipt that prints "Farmasi Maluri S/B(587969-U)" with no space before
+        # the bracket tokenises as ONE token and fails a punctuation-sensitive containment test
+        # for a reason that has nothing to do with the question. Measured: 32 of 957 seller.name
+        # instances turn on this alone, all of them spacing or punctuation
+        # ("MR. D.I.Y.(KUCHAI)" against an annotated "MR. D. I. Y. (KUCHAI)").
+        #
+        # This is a criterion being looser than exact, which is what a criterion is for. It is
+        # NOT the bug 1.19 was written against: that one had a criterion changing `exact`
+        # itself. Dropping punctuation here cannot, because `exact` is computed above from
+        # `p` and `t` and is never revisited. Token boundaries still hold, so the
+        # MART-inside-SUPERMARKET coincidence still fails.
+        contained = exact or (rule is MatchRule.TEXT_SUPERSET and _contains_token_run(
+            normalise_string(prediction, drop_punct=True).split(),
+            normalise_string(truth, drop_punct=True).split()))
+        # Contract 1.17 for TEXT: the same store-number strip, on a flat string.
+        lenient = contained or (normalise_string(strip_store_number(prediction))
+                                == normalise_string(strip_store_number(truth)))
+    if rule in (MatchRule.TEXT, MatchRule.ADDRESS, MatchRule.TEXT_SUPERSET):
         # Returned BEFORE _apply_policy, so --match-policy threshold cannot reach either rule.
+        # The ANLS is still computed and carried on `score` so the report can show HOW CLOSE a
+        # miss was; since contract 1.17 it decides NOTHING, on any rule.
         return MatchResult(matched=exact, exact=exact, score=score,
                            token_f1=token_f1(p, t),
                            reason="" if exact else f"not exact (anls {score:.3f})",
-                           convention=(convention if rule is MatchRule.ADDRESS else exact))
+                           convention=(convention if rule is MatchRule.ADDRESS else exact),
+                           contained=contained,
+                           lenient=lenient)
     res = MatchResult(
         matched=score >= ANLS_THRESHOLD,
         exact=exact,
         score=score,
         token_f1=token_f1(p, t),
         reason="" if score >= ANLS_THRESHOLD else f"anls {score:.3f}",
+        lenient=score >= ANLS_THRESHOLD,
     )
     return _apply_policy(res)
 
@@ -537,13 +844,12 @@ def comparison_forms(prediction: Any, truth: Any, rule: MatchRule) -> Tuple[str,
         t = normalise_address_compare(merge_address_components(truth)) or ""
         if _empty(prediction) and not isinstance(prediction, dict):
             return "", t
-        p_us = normalise_address_compare(
-            merge_address_components(prediction, alt_order=False)) or ""
-        p_alt = normalise_address_compare(
-            merge_address_components(prediction, alt_order=True)) or ""
-        # Show the order that scores best, which is the one the verdict was taken from.
-        p = p_us if (p_us == t or anls(p_us, t) >= anls(p_alt, t)) else p_alt
-        return p, t
+        forms = address_renderings(prediction)
+        # Show the rendering the verdict was taken from: the matching one if any matches,
+        # otherwise the closest (map contract 1.12, same set as _compare).
+        if t in forms:
+            return t, t
+        return max(forms, key=lambda f: anls(f, t), default=""), t
 
     if rule is MatchRule.TEXT_CONTAINED:
         return tuple("" if _empty(v) else (normalise_string(v, drop_punct=True) or "")

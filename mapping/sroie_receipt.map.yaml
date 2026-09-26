@@ -1,5 +1,5 @@
-version: 1.0-frozen
-dataset: SROIE (annotations, 1000 files)
+version: 1.1-draft            # -> 1.1-frozen when two reviewers sign contracts 1.12-1.18
+dataset: "SROIE (ICDAR-2019 task 3, full corpus: 973 files -> 958 documents)"
 schema_ref: "ai/extraction/new_schema.py :: ReceiptData"
 leaf_paths_ref: schema/receipt_leaf_paths.tsv
 
@@ -16,9 +16,23 @@ mappings:
     status: mapped
     targets:
       - {path: receiptInfo.txnDate, parser: passthrough_strip}
-      - {path: receiptInfo.txnDateISO, parser: date_to_iso}
+      # Map contracts 1.13 and 1.13.1 (Naveen, 2026-09-18). 1.13 replaced FATURA's `date_to_iso`
+      # (strict to "%d-%b-%Y", 5 of 626 parsed) with SROIE's own parser. 1.13.1 then resolved
+      # the day/month order from the CORPUS instead of excluding it: 337 of the 339 numeric
+      # dates whose printed form settles their own order are day-first, 2 are month-first, and
+      # the 2 month-first pages are now read month-first rather than called unparseable.
+      # 625 of 626 documents scoreable. See datasets/sroie_parsers.py.
+      - {path: receiptInfo.txnDateISO, parser: sroie_date_to_iso, locale: day_first_MY}
     absence_authoritative: false
 
+  # Map contract 1.12 (Naveen, 2026-09-18) governs how this target is COMPARED, not how the
+  # ground truth is built: the prediction is rendered every admissible way -- three component
+  # orders x {as emitted, de-duplicated} -- and each is compared for exact equality. The two
+  # orders tried before misrepresented a correct address in two ways, both measured on
+  # sroie_t500: a component the model had already spelled out inside `address` was appended a
+  # second time, and the street/CITY/POSTCODE/state order every SROIE block prints was not
+  # among the renderings. 380 -> 416 of 499 documents, none lost; on FATURA s42_main2000, 18
+  # gained of 10,440 comparisons, none lost. See core/normalize.py::address_renderings.
   - label: address
     labels: [address]
     status: mapped
@@ -70,3 +84,260 @@ not_annotated:
     - totals.roundingAdjustment
     - applyTaxAfterDiscount
     - currency
+
+CHANGELOG:
+  - date: 2026-09-21
+    who: Claude (draft), pending Naveen's sign-off
+    change: >
+      CONTRACT 1.19 -- SUBSTRING MATCHING is restored to parties.seller.name, via a NEW rule
+      that cannot move the field's exact number. Asked for directly (Naveen, 2026-09-21): "for
+      which field we are generating extra text/output comparing with GT, for that field I want
+      to have substring matching."
+      WHICH FIELD WAS MEASURED, NOT ASSUMED. Every non-exact instance of every scored path on
+      sroie_full958 arm FINAL, classified by whether the GT is a contiguous token run of the
+      prediction: parties.seller.name 450 of 476 (94.5%); addressStructured 15 of 160 (9.4%);
+      txnDate 4 of 12; txnDateISO 0 of 5; totalIncludingTax 1 of 10. ONE field over-extracts by
+      two orders of magnitude in COUNT. The last three are diagnostic only -- DATE_RAW and
+      NUMERIC compute no containment verdict, so eligibility is DECLARED per rule and never
+      inferred from that table.
+      THE RULE: doctypes.RECEIPT.contained_leaves selects MatchRule.TEXT_SUPERSET, which is TEXT
+      in every respect -- same normalisation, same `exact`, same 1.17 store-number lenient --
+      with one extra verdict computed. It does NOT select TEXT_CONTAINED, and that distinction
+      is the contract. TEXT_CONTAINED computes `exact` with punctuation DROPPED while TEXT keeps
+      it, so routing this leaf through it decided two things at once: it turned the containment
+      column on AND moved the leaf's exact figure by 0.94pp across 9 documents ("MR. D.I.Y."
+      against an annotated "MR. D. I. Y."). A criterion must not be able to move the headline it
+      is published beside. tests/test_containment.py asserts TEXT and TEXT_SUPERSET agree on
+      `exact` and `matched` for every pair, including those nine.
+      THE CONTAINMENT COMPARISON DROPS PUNCTUATION, deliberately, while `exact` does not. A page
+      printing "Farmasi Maluri S/B(587969-U)" with no space before the bracket tokenises as ONE
+      token and would fail containment for a reason unrelated to the question; 32 of 957
+      instances turn on this alone. Token boundaries still hold, so MART inside SUPERMARKET and
+      BHD inside ABHDX still fail -- asserted in tests.
+      MEASURED: seller.name 50.26% exact -> 97.28% contains (FINAL), 48.38% -> 97.28% (RAW).
+      Micro FINAL 86.14% exact / 95.86% contains, RAW 85.52% / 95.53%. EXACT IS BYTE-IDENTICAL
+      to the pre-1.19 scoring on all three arms and all five fields.
+      1.17 BECOMES INERT ON THIS CORPUS and is kept anyway: lenient and contains land on the
+      same number, because every store-number case is ALSO a containment case -- the
+      registration number is APPENDED, which leaves the GT intact inside the prediction. The two
+      columns separate only where the number is printed INSIDE the name
+      ("GARDENIA (139386 X) BAKERIES"), which SROIE never does.
+      WHAT CONTAINMENT FORGIVES, restated because the number will be quoted: it is asymmetric.
+      "PETRON BKT LANJAN SB ALSERKAM ENTERPRISE" contains an annotated "PETRON BKT LANJAN SB"
+      and passes. It answers "is the right answer in there, unbroken", never "is this the
+      answer". 450 of seller.name's 476 failures are that; 26 are a genuinely different name.
+      COUNTS RESTATED PRECISELY, because an earlier draft of this entry quoted a figure measured
+      before the containment comparison dropped punctuation: 450, not 418. The 32-instance gap
+      between the two is exactly the punctuation cases above.
+      Report: docs/11_SROIE_RESULTS.md sections 2.1, 5.1.
+  - date: 2026-09-21
+    who: Claude (draft), pending Naveen's sign-off
+    change: >
+      CONTRACTS 1.17 and 1.18 -- the LENIENT and CONTAINMENT criteria are both REDEFINED, and
+      the two changes are recorded together because each is only defensible given the other.
+      Asked for directly (Naveen, 2026-09-21): "contained - only for the address fields the GT
+      present in extracted values. for lenient score - after applying the removal of store
+      number with regex, no need to apply ANSL score."
+      1.18 -- CONTAINMENT IS ADDRESS-SCOPED. It applied to parties.seller.name (contract 1.16),
+      which made the published `contains` column a statement about the seller name: 51.20%
+      exact against 97.28% contained on FINAL. That column was forgiving the wrong thing. A
+      prediction of "THREE STOOGES BISTRO & CAFE" against an annotated "THREE STOOGES", or
+      "PETRON BKT LANJAN SB ALSERKAM ENTERPRISE" against "PETRON BKT LANJAN SB", CONTAINS the
+      ground truth and is a DIFFERENT TRADING NAME. The address is the one field where the
+      pipeline legitimately emits more than the annotator stored, because a receipt prints the
+      full postal block and SROIE keeps a prefix of it. doctypes.RECEIPT.contained_leaves is
+      now empty and the ADDRESS rule computes containment itself, on token boundaries, against
+      every admissible rendering (so 1.12's promise is inherited).
+      MEASURED: address FINAL 83.26% exact -> 84.83% contains (+1.57pp, 15 instances of 956).
+      seller.name contains collapses onto exact, as intended.
+      1.17 -- LENIENT IS NO LONGER A SIMILARITY BAR. It replaces 1.14's ANLS >= 0.8 with exact
+      equality after BOTH sides shed every parenthesised group containing a DIGIT -- the
+      business-registration number a Malaysian receipt prints beside the trading name. ANLS now
+      decides nothing on any rule and --anls-threshold is inert; the score is still computed and
+      carried on every row for the report's "how close was the miss" column.
+      THE RULE IS SHAPED BY THE DIGIT, not by the formats seen so far, because the corpus prints
+      at least six: (1125830-V) (JM0352019-K) (SA0264195-T) bare and state-prefixed,
+      (CO.REG :704427-T) (Company No 559208-M) (CO NO. SA0345444-K) labelled, and (139386 X)
+      (8199K) (LLP0007299-LGN) space-separated, unseparated and LLP. A narrower rule keyed on
+      <digits>-<char> catches 177 of the 261 mismatches this one resolves and misses every
+      labelled and space-separated variant.
+      IT CANNOT REACH A NAME: a digit-free parenthetical is part of the name, so "AEON CO. (M)
+      BHD", "GARDENIA BAKERIES (KL) SDN BHD", "THE STORE (MALAYSIA) SDN BHD" and "BOOK TA .K
+      (TAMAN DAYA) SDN BHD" are untouched.
+      MEASURED over all 958 documents in all three arms: the rule resolves 261 seller.name
+      mismatches and breaks ZERO exact matches. seller.name FINAL 50.26% exact -> 77.53%
+      lenient; micro FINAL 86.14% exact / 86.46% contains / 91.91% lenient.
+      WHAT IT COST, stated because it moves a published number: taking seller.name off
+      TEXT_CONTAINED also moved its EXACT verdict by -0.94pp (51.20% -> 50.26%) on 9 documents.
+      The old rule normalised that one leaf with punctuation DROPPED; the `text` rule it now
+      carries keeps punctuation, which is what contracts 1.6/1.7 specify and what every other
+      text field already did. The nine are spacing and punctuation -- "MR. D.I.Y." against an
+      annotated "MR. D. I. Y.", "SDN BHD." against "SDN. BHD.", "(SP}" against "(SP)",
+      "**Royaltea**" against "ROYALTEA". This is one leaf's normalisation being brought into
+      line, not a pipeline regression: the headline exact figure is 0.19pp lower than the
+      previous report's for a scoring reason.
+      THE LADDER HOLDS: exact <= contains <= lenient, enforced in compare().
+      Tests: tests/test_lenient.py, tests/test_containment.py. Report: docs/11_SROIE_RESULTS.md.
+  - date: 2026-09-18
+    who: Claude (draft), pending Naveen's sign-off
+    change: >
+      CONTRACT 1.16 (SUPERSEDED IN SCOPE BY 1.18 -- containment no longer applies to
+      seller.name; the entry is kept because it is the measurement 1.18 argues against) -- a
+      CONTAINMENT criterion is published as a FOURTH column beside exact,
+      convention-adjusted and lenient, on the same denominators. Defined once for the whole
+      benchmark; the full entry is in mapping/fatura_invoice.map.yaml where the numbered
+      scoring contracts live. Recorded here because parties.seller.name is the ONLY scored
+      field in the benchmark that the new column moves, so SROIE is the only place the number
+      means anything.
+      THE FIELD: seller.name RAW 49.43% exact -> 97.28% contains, FINAL 51.20% -> 97.28%
+      (sroie_full958, n=957). The gap is the printed registration number and the outlet the
+      model appends to the registered name -- the same population scripts/probe_seller_name_scope.py
+      was written to size. Exact asks whether the output emitted the name AND NOTHING ELSE;
+      contains asks whether it emitted the name INTACT. Both are real questions about this
+      field and neither is a substitute for the other.
+      IT COINCIDES WITH LENIENT HERE, AND THAT IS THE FINDING, not a redundancy. Not one of the
+      957 instances separates contains from lenient in any arm. Lenient for this rule is token
+      recall >= 0.9, which would pass a prediction holding 90% of the tokens in any order;
+      containment requires every token, in order, unbroken. Their agreeing means the 0.9 bar is
+      doing NO WORK on this corpus -- every lenient pass is a full verbatim ground truth
+      sitting inside the prediction -- so the lenient seller.name figure is stronger evidence
+      than its own definition promises.
+      AT MICRO LEVEL THE TWO COLUMNS ARE NOT THE SAME and must not be read as such:
+      sroie_full958 RAW 85.73% exact / 95.30% contains / 96.99% lenient, FINAL 86.33% / 95.55%
+      / 97.30%. Containment loosens seller.name alone; lenient also loosens addressStructured
+      through ANLS. The gap between the two columns is exactly the address tolerance, which is
+      what makes publishing both useful -- contains isolates name over-extraction from address
+      near-misses, and neither column could do that on its own.
+      Held-out half, for the record: sroie_test337 seller.name 50.45% exact -> 97.92% contains
+      (RAW), 51.93% -> 97.63% (FINAL). Exact numbers verified BYTE-IDENTICAL on all three SROIE
+      runs after the change. Tests: tests/test_containment.py.
+  - date: 2026-09-18
+    who: Claude (draft), pending Naveen's sign-off
+    change: >
+      CONTRACT 1.15 -- the corpus becomes the FULL SROIE task-3 set, 958 documents under their
+      ORIGINAL ICDAR ids, replacing the 626 the benchmark had been running on. A CORPUS change,
+      not a scoring or a map one: not one label, target, parser or match rule is touched. The
+      626 were the TRAIN split alone, taken from the zzzDavid/ICDAR-2019-SROIE repo and
+      renumbered "000".."625" by it -- ids with no provenance, and a corpus with no held-out
+      half, so every map decision above was piloted on the same documents the numbers were
+      reported from. The Kaggle mirror dattrinh12/sroie-dataset publishes all 973 task-3 files
+      under SROIE's own names; scripts/prepare_sroie_full.py materialises them and states what
+      it had to decide.
+      VERIFIED A SUPERSET BEFORE THE SWITCH: all 621 distinct images the old corpus held are
+      byte-identical to a file in the mirror, so no document is lost, and 337 are new. The
+      response cache is keyed on sha256(image bytes), not on doc_id, so the rename costs no
+      re-extraction and only the 337 are unpaid for.
+      THREE DECISIONS, each recorded rather than assumed. (a) DUPLICATES: 15 pairs of files are
+      byte-identical images published under two ids. One record per distinct image; the folded
+      ids are in SROIE_FULL/duplicates.json. (b) SPLIT: the mirror's own 70/15/15 re-split puts
+      five images on BOTH sides of itself and cannot be reported from, so the original ICDAR
+      boundary is reconstructed by image bytes -- 621 train / 337 test, no image on both sides.
+      meta['split'] carries it, and scripts/plan_by_split.py now emits sroie_train_pilot_40 and
+      sroie_test_main_337, so the map can be piloted on documents the reported number is not
+      computed from. That was not possible before. (c) GROUND-TRUTH CONFLICTS: 5 of the 15
+      duplicate pairs annotate the same pixels differently. Three are notational and equal
+      under the comparison normalisers this benchmark already uses ("RM7.42" vs "7.42",
+      "NO: 28, JALAN" vs "NO: 28,JALAN"); they are resolved to the canonical copy and logged.
+      Two are substantive -- "BEMED (SP) SDN BHD" vs "BEMED (SP) SDN. BHD.", and an address
+      carrying an extra outlet line "1299-SUBANG PERMAI" -- and the corpus does NOT pick an
+      annotator: both values go through the same target parsers and the adapter's existing rule
+      excludes the path as "conflicting GT labels". Two field-level exclusions in 958 documents.
+      REGRESSION CHECK, run before this was written: rebuilding the old 626 from the old root
+      and comparing against the new ground truth for the same images, 623 of 626 are IDENTICAL.
+      The 3 that differ are exactly the cases above -- one cosmetic address respacing that both
+      criteria already score the same, and the two new exclusions.
+      COVERAGE: 626 -> 958 documents, all 5 paths still headline-eligible.
+      addressStructured 626 -> 957, seller.name 626 -> 957, txnDate 626 -> 958,
+      txnDateISO 625 -> 957, totalIncludingTax 626 -> 958. Every SROIE figure quoted above --
+      the 1.11, 1.12, 1.13, 1.13.1 and 1.14 entries, all measured on sroie_t500 or sroie_t626 --
+      remains a statement about the 626-document corpus and must keep that name attached.
+      gt/receipt/sroie/superseded_626/ holds those plans, and sroie_legacy626_main_621.json is
+      the same document set under the new ids, so any of them can be recomputed from cache and
+      compared like for like.
+  - date: 2026-09-18
+    who: Claude (draft), pending Naveen's sign-off
+    change: >
+      CONTRACT 1.13.1 -- the day/month order of a numeric SROIE date is resolved by EVIDENCE,
+      in either direction, and by the corpus convention only where the page settles nothing.
+      A GROUND-TRUTH change. Contract 1.13 declined every date whose two leading fields are
+      both <= 12, on the ground that day-first was an assumption the page did not confirm.
+      That was cautious but unmeasured, and the measurement was available: counting only the
+      dates whose printed form settles their own order, 337 are day-first and 2 are month-first
+      -- 99.41%. It is corroborated one level down: of the 215 declined dates, 129 sit in a
+      merchant cluster (documents sharing a printed header) whose OTHER receipts prove
+      day-first, and NOT ONE cluster proves month-first. Both month-first documents (013
+      '12/28/2017', 383 '12/13/2016') are one-off merchants, so the convention cannot mis-read
+      a second date from either. TWO changes follow. (a) A page whose SECOND field exceeds 12
+      has PROVED month-first and is now read month-first; contract 1.13 tried day-first
+      formats on those two, failed, and recorded "GT value present but unparseable", which
+      reported a measurement as a defect. (b) A date with both fields <= 12 takes the measured
+      convention instead of being excluded. Coverage 408 -> 625 of 626 documents; the single
+      remaining exclusion is doc 152 '25032018', which carries no separator. The
+      ORDER-AMBIGUOUS exclusion bucket is retired. COST, stated because the gain is the
+      headline: a month-first date is detectable only when its day exceeds 12 (~61% of the
+      time), so 2 detected imply ~3 in the corpus and about ONE undetected inside the 215 --
+      roughly 1 document misread against 217 gained. Effect on sroie_t626: txnDateISO
+      n = 408 -> 625.
+    who: Claude (draft), pending Naveen's sign-off
+    change: >
+      CONTRACT 1.14 -- a LENIENT criterion is published as a THIRD column beside exact, on the
+      same denominators. Defined once for the whole benchmark; the full entry is in
+      mapping/fatura_invoice.map.yaml where the numbered scoring contracts live. Recorded here
+      because SROIE is where the two numbers diverge most and where the gap is most likely to
+      be misread. Measured on sroie_t626 FINAL: micro 84.9% exact vs 96.9% lenient. Per field:
+      addressStructured 81.6 -> 91.2%, seller.name 50.8 -> 97.0%, and txnDate, txnDateISO and
+      totalIncludingTax are IDENTICAL under both criteria because no soft rule touches a date
+      or a number. So the entire 12-point gap is two fields, and on seller.name almost all of
+      it is one thing: TEXT_CONTAINED is token recall of the ground truth and cannot detect
+      over-extraction, so the model appending the printed registration number or the outlet
+      name -- the 232 rows the 1.11 entry below already itemises -- passes lenient and fails
+      exact. The lenient seller.name figure answers "did the model READ the name"; the exact
+      one answers "did it emit the name AND NOTHING ELSE". Quote either, name which.
+  - date: 2026-09-18
+    who: Claude (draft), pending Naveen's sign-off
+    change: >
+      CONTRACT 1.13 -- receiptInfo.txnDateISO is built by datasets/sroie_parsers.py
+      ::sroie_date_to_iso instead of fatura_parsers.date_to_iso. A GROUND-TRUTH change, not a
+      scoring one. date_to_iso is documented as strict to FATURA's "%d-%b-%Y"; SROIE prints
+      dates seventeen ways and only 5 of 626 match, so 621 documents were recorded as "GT value
+      present but unparseable (date)" and the field was published at n=5 -- which reads as a
+      coverage fact about the corpus when it is a fact about the parser. SROIE is a Malaysian
+      corpus, so day-first is stated as the locale rather than guessed per document, and a
+      numeric date whose two leading fields are BOTH <= 12 is still declined: coverage goes
+      5 -> 408 documents, with 215 published as order-ambiguous and 3 as unreadable, now under
+      SEPARATE exclusion reasons because those are different findings about the data. Effect on
+      sroie_t500: txnDateISO becomes headline-eligible at n=321 and scores 99.7% RAW /
+      100.0% FINAL -- a product capability that was entirely invisible before.
+  - date: 2026-09-18
+    who: Claude (draft), pending Naveen's sign-off
+    change: >
+      CONTRACT 1.12 -- the ADDRESS rule compares the prediction against a SET of admissible
+      renderings (three component orders x {as emitted, de-duplicated}), each for exact
+      equality, rather than against two component orders only. See
+      core/normalize.py::address_renderings. Not a tolerance and not a similarity score: every
+      rendering is a permutation of the same component values, so a misread street, a dropped
+      state or a transposed digit still fails all of them, and no document can be lost.
+      Forced by finding the benchmark scoring CORRECT addresses wrong in two ways, both
+      measured on sroie_t500 before the change: (1) where the model spelled the block out in
+      `address` AND also filled city/state/postal_code, the merge appended each a second time
+      ("... sg besi kl kl 57000" against a ground truth of "... sg besi 57000 kl"); (2) the
+      street/CITY/POSTCODE/state order every SROIE block prints was not among the renderings.
+      Measured: sroie_t500 FINAL 380 -> 416 of 499 documents (RAW 371 -> 423), 0 lost; FATURA
+      s42_main2000, 18 verdicts gained of 10,440 address comparisons across 3 paths x 3 arms,
+      0 lost, micro +0.025pt; CORD cord_test_main_100, 0 changes. The dedupe test is
+      TOKEN-wise, not substring-wise -- a substring test reads city "KL" as already present in
+      a street containing "Klang" and costs 11 documents.
+  - date: 2026-09-18
+    who: Claude, at Naveen's direction
+    change: >
+      NOT AMENDED, recorded so the number is read correctly. parties.seller.name stays on the
+      exact criterion and reports 50.0% on sroie_t500 FINAL. Of its 250 failures, 133 are the
+      model appending the printed company registration number ("99 SPEED MART S/B" ->
+      "99 speed mart s b 519537 x"), 99 are it appending the outlet or brand ("IKANO HANDEL
+      SDN BHD" -> "... ikea cheras"), and 18 are genuine divergences -- of which 9 are SROIE
+      ground-truth typos ("ted heng", "rstoran", "tail oring", "sbn bhd"). A closed
+      registration-number notation rule, of the kind contract 1.11 already admits for a
+      currency symbol, would read 76.6% on the same exact criterion; token recall >= 0.9 would
+      read 96.4% but cannot detect over-extraction. Naveen declined both on 2026-09-18: the
+      published figure therefore answers "does the model emit the registered name and nothing
+      else", NOT "did it read the name". Quote it with that sentence attached.

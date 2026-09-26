@@ -15,6 +15,7 @@ _ROOT = pathlib.Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(_ROOT))
 
 from core.canonical import read_jsonl                                          # noqa: E402
+from core.canonical import map_version_at_scoring_time            # noqa: E402
 from core.matching import load_rule_registry, compare, comparison_forms       # noqa: E402
 from core.metrics import (flatten_prediction, unwrap, predicted_value,       # noqa: E402
                           load_type_registry, _resolve)
@@ -261,6 +262,8 @@ def row_cells(rec, arms_data, spec, leaf_types, judge) -> list:
                     c = per_arm.get(arm)
                     m = matched_gt.get(arm, {}).get(gi)
                     row[f"pred_row_{arm}"] = "" if m is None else m.pred_index
+                    row[f"l_{arm}"] = ""
+                    row[f"c_{arm}"] = ""
                     if arm not in scored:
                         row[f"val_{arm}"] = row[f"v_{arm}"] = ""
                         row[f"s_{arm}"] = row[f"x_{arm}"] = ""
@@ -279,6 +282,10 @@ def row_cells(rec, arms_data, spec, leaf_types, judge) -> list:
                     row[f"x_{arm}"] = ""
                     if c and c["ok"]:
                         row[f"x_{arm}"] = "exact" if c.get("exact") else f"SOFT {c['score']:.3f}"
+                    if c and c.get("ok_lenient") and not c["ok"]:
+                        row[f"l_{arm}"] = f"LENIENT PASS {c['score']:.3f}"
+                    if c and c.get("ok_contained") and not c["ok"]:
+                        row[f"c_{arm}"] = "CONTAINS GT"
                 for key_t, _label, before, after in TRANSITIONS:
                     row[key_t] = ""
                     vb, va = row.get(f"v_{before}"), row.get(f"v_{after}")
@@ -293,14 +300,17 @@ def row_cells(rec, arms_data, spec, leaf_types, judge) -> list:
 SEC_HEAD = (["doc_id", "template", "section", "GT row", "cell", "GT"]
             + [c for arm in ARMS for c in (ARM_HEADER[arm], f"v · {SHORT[arm]}",
                                            f"scored on · {SHORT[arm]}",
-                                           f"exact · {SHORT[arm]}", f"pred row · {SHORT[arm]}")]
+                                           f"exact · {SHORT[arm]}", f"contains · {SHORT[arm]}",
+                                           f"lenient · {SHORT[arm]}",
+                                           f"pred row · {SHORT[arm]}")]
             + [label for _k, label, _b, _a in TRANSITIONS]
             + ["aligned on", "matched leaf", "judge flag", "judge type", "judge corrected",
                "your verdict", "notes"])
 
 SEC_KEYS = (["doc_id", "template", "section", "gt_row", "cell", "gt"]
             + [c for arm in ARMS for c in (f"val_{arm}", f"v_{arm}", f"s_{arm}",
-                                           f"x_{arm}", f"pred_row_{arm}")]
+                                           f"x_{arm}", f"c_{arm}", f"l_{arm}",
+                                           f"pred_row_{arm}")]
             + [k for k, _l, _b, _a in TRANSITIONS]
             + ["aligned_on", "matched_leaf", "judge_flag", "judge_type", "judge_corrected"])
 
@@ -391,11 +401,14 @@ def main() -> int:
             truth = rec.gt.get(path)
             gt_absent = isinstance(truth, _Absent)
             cells, verdicts, exacts, sources = {}, {}, {}, {}
+            leniencies, containments = {}, {}
             for arm in ARMS:
                 pred = predicted_value(path, flats[arm], spec) if arm in flats else None
                 cells[arm] = pred
                 exacts[arm] = ""
                 sources[arm] = ""
+                leniencies[arm] = ""
+                containments[arm] = ""
                 if arm not in flats:
                     verdicts[arm] = ""
                 elif gt_absent:
@@ -405,13 +418,28 @@ def main() -> int:
                     res = compare(pred, truth, rule)
                     verdicts[arm] = "match" if res.matched else "MISMATCH"
                     sources[arm] = res.value_source or ""
-                    # A pass that is NOT exact-after-normalisation only happens under the
-                    # threshold rules (text ANLS>=0.8, address, text_contained). Flagging it
-                    # is the difference between "the model got this right" and "the model got
-                    # close enough that the threshold let it through" -- on addresses a dropped
-                    # postcode digit scores ~0.98 and reads as a clean match without this.
+                    # Under match_policy=exact every headline verdict IS the exact verdict,
+                    # so this column is now a standing assertion rather than a finding: a
+                    # `SOFT` here means a rule reached the threshold branch, which no
+                    # headline-eligible rule does since contract 1.7. Kept because that is
+                    # exactly the regression it would catch.
                     if res.matched:
                         exacts[arm] = "exact" if res.exact else f"SOFT {res.score:.3f}"
+                    # Map contract 1.17. Blank where the two criteria agree, so filtering this
+                    # column to non-blank gives exactly the rows the headline calls wrong and
+                    # the lenient number calls right -- which is the set a reviewer has to
+                    # adjudicate to decide which figure to quote. Since 1.17 that set has ONE
+                    # shape: a printed business-registration number. The ANLS score is shown
+                    # beside it for context and decides nothing.
+                    if res.lenient and not res.matched:
+                        leniencies[arm] = f"STORE NUMBER ONLY (anls {res.score:.3f})"
+                    # Map contract 1.16 as scoped by 1.18 and 1.19, on the same terms as the
+                    # column beside it: blank where containment agrees with exact, so filtering
+                    # to non-blank gives exactly the rows where the model emitted the ground
+                    # truth INTACT but not alone. Scoped to the two fields that over-extract --
+                    # seller.name and addressStructured -- measured, not assumed.
+                    if res.contained and not res.matched:
+                        containments[arm] = "CONTAINS GT"
             # The normalised forms are what compare() actually equates. Computed from the
             # same (pred, truth, rule) triple that produced the verdict beside them, and
             # cross-checked against it by scripts/verify_comparison_forms.py.
@@ -440,6 +468,8 @@ def main() -> int:
                 row[f"v_{arm}"] = verdicts[arm]
                 row[f"s_{arm}"] = sources[arm]
                 row[f"x_{arm}"] = exacts[arm]
+                row[f"c_{arm}"] = containments[arm]
+                row[f"l_{arm}"] = leniencies[arm]
             for key, _label, before, after in TRANSITIONS:
                 row[key] = ""
                 if verdicts.get(before) and verdicts.get(after):
@@ -461,7 +491,9 @@ def main() -> int:
     if literal:
         print(f"{literal} cell(s) held text that starts with =/+/-/@ and were forced to "
               f"literal strings (receipt text, not formulas)")
-    _readme(wb, rows, manifest, use_formulas)
+    _readme(wb, rows, manifest, use_formulas,
+            map_version=map_version_at_scoring_time(
+                spec.name, a.dataset or manifest.get('dataset')))
     wb.save(out)
     print(f"{len(rows)} field rows · {len({r['doc_id'] for r in rows})} documents "
           f"· {len({r['field'] for r in rows})} fields")
@@ -484,6 +516,8 @@ HEADERS = (["doc_id", "template", "field", "rule", "headline", "GROUND TRUTH"]
            + [f"{SHORT[a]}?" for a in ARMS]
            + [f"{SHORT[a]} scored on" for a in ARMS]
            + [f"{SHORT[a]} exact?" for a in ARMS]
+           + [f"{SHORT[a]} contains?" for a in ARMS]
+           + [f"{SHORT[a]} lenient?" for a in ARMS]
            + [label for _k, label, _b, _a in TRANSITIONS]
            + ["judge flagged", "judge issue", "judge corrected value",
               "ADJUDICATION", "NOTES"])
@@ -495,10 +529,14 @@ ROW_KEYS = (["doc_id", "template", "field", "rule", "headline", "gt"]
             + [f"v_{a}" for a in ARMS]
             + [f"s_{a}" for a in ARMS]
             + [f"x_{a}" for a in ARMS]
+            + [f"c_{a}" for a in ARMS]
+            + [f"l_{a}" for a in ARMS]
             + [k for k, _l, _b, _a in TRANSITIONS]
             + ["judge_flag", "judge_type", "judge_corrected"])
 
-COL_WIDTHS = {"doc_id": 22, "template": 12, "field": 40, "rule": 14, "headline": 9,
+COL_WIDTHS = {**{f"{SHORT[a]} lenient?": 18 for a in ARMS},
+              **{f"{SHORT[a]} contains?": 16 for a in ARMS},
+              "doc_id": 22, "template": 12, "field": 40, "rule": 14, "headline": 9,
               "GROUND TRUTH": 36, "judge flagged": 9, "judge issue": 22,
               "judge corrected value": 26, "ADJUDICATION": 20, "NOTES": 34,
               "GT normalised": 34, **{f"{SHORT[a]} normalised": 34 for a in ARMS}}
@@ -632,9 +670,9 @@ def _by_file(wb, rows, formulas):
 def _by_field(wb, rows, formulas):
     """Per-field rates, plus how much of FINAL's pass rate is threshold-only.
 
-    `FINAL exact` counts the FINAL matches that were also exact after normalisation. Where it
-    sits below `FINAL correct`, the gap is entirely made of text / address / text_contained
-    rows that cleared a threshold without matching -- the rows to read before quoting a number.
+    `FINAL exact` counts the FINAL matches that were also exact after normalisation. Since
+    contract 1.7 no headline-eligible rule can clear a threshold without matching, so this
+    column should equal `FINAL correct` on every row; a gap is a regression, not a finding.
 
     Rates divide by `GT present` (rows the dataset states a value for), NOT by `rows`. That is
     metrics.RECALL_DEN, so these columns reconcile with results.md. Dividing by every row would
@@ -706,14 +744,17 @@ def _finish(ws, widths, pct_cols="", mono_first=False):
     ws.auto_filter.ref = f"A1:{get_column_letter(ws.max_column)}{ws.max_row}"
 
 
-def _readme(wb, rows, manifest, formulas):
+def _readme(wb, rows, manifest, formulas, map_version=None):
     ws = wb.create_sheet("Read me", 0)
     ws.sheet_view.showGridLines = False
+    # The map that decided these verdicts, not the copy the runner recorded -- a re-export
+    # after a map amendment must not label the new verdicts with the old contract.
+    map_version = map_version or manifest.get("field_map_version")
     lines = [
         ("Benchmark review — %s" % manifest.get("run_id"), 15, True),
         ("", 10, False),
         (f"{len(rows)} field rows · {len({r['doc_id'] for r in rows})} documents · "
-         f"field map {manifest.get('field_map_version')} · "
+         f"field map {map_version} · "
          f"models {manifest.get('models', {}).get('extraction')} / "
          f"{manifest.get('models', {}).get('judge')}", 10, False),
         ("", 10, False),
@@ -767,6 +808,32 @@ def _readme(wb, rows, manifest, formulas):
          "similarity bar, which meant the benchmark forgave its own largest class of address "
          "error — 99 rows in FINAL. They are errors now, and worth fixing in the product rather "
          "than in the metric.", 10, False),
+        ("", 10, False),
+        ("contains? and lenient? columns", 12, True),
+        ("Two SECOND READINGS of the same comparison, on the same rows. Both are blank wherever "
+         "they agree with the headline verdict, so filtering either to non-blank gives exactly "
+         "the rows the headline calls wrong and that criterion calls right — the set to "
+         "adjudicate before deciding which figure to quote.", 10, False),
+        ("CONTAINS GT (map contracts 1.16 + 1.18 + 1.19) — SELLER NAME AND ADDRESS ROWS ONLY. "
+         "The ground truth is in the output VERBATIM AND UNBROKEN, with other text around it. "
+         "The value is right; the scope is wider than the annotation. Those two fields carry "
+         "it because they are the two the pipeline over-extracts on — 450 of seller.name's 476 "
+         "non-exact instances and 15 of the address's 160, measured on sroie_full958. No date "
+         "or numeric rule computes a containment verdict, so those columns read identical to "
+         "exact by construction.", 10, False),
+        ("    IT IS ASYMMETRIC, and this is the sentence to read before quoting the column: it "
+         "forgives arbitrary text on either side of the value, so 'PETRON BKT LANJAN SB "
+         "ALSERKAM ENTERPRISE' passes against an annotated 'PETRON BKT LANJAN SB', and so would "
+         "a prediction that glued two companies together. It answers 'is the right answer in "
+         "there, unbroken', never 'is this the answer'. Adjudicate these rows; do not assume "
+         "them.", 10, False),
+        ("STORE NUMBER ONLY (map contract 1.17) — the two sides are EQUAL once both shed every "
+         "parenthesised group containing a digit, i.e. the printed business-registration "
+         "number: 'SWC ENTERPRISE SDN BHD (1125830-V)' against 'SWC ENTERPRISE SDN BHD'. This "
+         "is not a similarity bar — 1.17 replaced 1.14's ANLS >= 0.8, and no threshold decides "
+         "any verdict in this workbook. The anls figure in the cell is context only. A "
+         "digit-free parenthetical is part of the name and is never removed, so 'AEON CO. (M) "
+         "BHD' and 'GARDENIA BAKERIES (KL) SDN BHD' are untouched.", 10, False),
         ("", 10, False),
         ("Columns you fill in (yellow)", 12, True),
         ("ADJUDICATION — for each MISMATCH, which of these it actually is:", 10, False),

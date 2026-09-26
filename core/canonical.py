@@ -106,3 +106,24 @@ def write_jsonl(records: List[BenchmarkRecord], path: str) -> int:
 def read_jsonl(path: str) -> List[BenchmarkRecord]:
     with open(path, encoding="utf-8") as fh:
         return [BenchmarkRecord.from_json(line) for line in fh if line.strip()]
+
+
+def map_version_at_scoring_time(doc_type: str, dataset=None) -> str:
+    """The version of the map THIS scoring read, not the one the run recorded.
+
+    The manifest's `field_map_version` is written by the runner, but a run does not consult the
+    field map at all -- extraction and the judge never see ground truth. The map governs GT
+    BUILDING and SCORING, both of which happen afterwards and can happen again. So when a map
+    is amended and an existing run is re-scored, the manifest's copy is stale and reporting it
+    labels the new numbers with the old contract. Falls back to the manifest's value only when
+    the map cannot be read.
+    """
+    import yaml
+    from registry import dataset_for as _df
+    try:
+        p = pathlib.Path(_df(doc_type, dataset).map_path)
+        if not p.is_absolute():
+            p = pathlib.Path(__file__).resolve().parent.parent / p
+        return yaml.safe_load(p.read_text(encoding="utf-8")).get("version", "?")
+    except Exception:
+        return "?"
