@@ -564,7 +564,7 @@ DEFAULT_SCORING = {
         "rule": "exact equality after BOTH sides shed every parenthesised group containing a "
                 "digit -- the printed business-registration number",
         "text": "applied (seller/customer name, tax name)",
-        "address": "applied, on every admissible rendering; containment also passes",
+        "address": "applied, on every rendering the address rule admits; containment also passes",
         "phone": "digits only, leading '+' kept",
         "every other rule": "identical to exact -- no tolerance on numbers, dates or ids",
         "no_threshold": "ANLS decides nothing on any rule since contract 1.17",
@@ -575,7 +575,7 @@ DEFAULT_SCORING = {
     "containment_criterion": {
         "rule": "the ground truth appears inside the prediction verbatim and unbroken, matched "
                 "on token boundaries (not raw substring), punctuation dropped",
-        "address": "applied, against every admissible rendering of the five components",
+        "address": "applied, against every rendering the address rule admits",
         "text_superset": "applied -- the leaves a doc type declares in contained_leaves",
         "every other rule": "identical to exact",
         "scope_note": "the fields the pipeline OVER-EXTRACTS on, measured rather than assumed "

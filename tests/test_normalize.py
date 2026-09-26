@@ -384,7 +384,7 @@ def test_1_12_duplicated_components_are_admissible():
     pred = {"address": "13, JLN TASIK UTAMA 8, MEDAN NIAGA DAMAI SG BESI",
             "city": "KL", "state": "KL", "postal_code": "57000", "country": None}
     gt = "13, jln tasik utama 8 medan niaga damai sg besi 57000 kl"
-    assert compare(pred, gt, MatchRule.ADDRESS).exact
+    assert compare(pred, gt, MatchRule.ADDRESS_RENDERINGS).exact
 
 
 def test_1_12_city_postcode_state_order_is_admissible():
@@ -394,7 +394,7 @@ def test_1_12_city_postcode_state_order_is_admissible():
             "city": "CHERAS", "state": "KUALA LUMPUR",
             "postal_code": "55100", "country": None}
     gt = "3rd flr, aeon taman maluri sc jln jejaka, taman maluri cheras, 55100 kuala lumpur"
-    assert compare(pred, gt, MatchRule.ADDRESS).exact
+    assert compare(pred, gt, MatchRule.ADDRESS_RENDERINGS).exact
 
 
 def test_1_12_dedupe_is_token_wise_not_substring_wise():
@@ -410,7 +410,7 @@ def test_1_12_cannot_forgive_a_misread():
     from core.matching import compare, MatchRule
     pred = {"address": "13, JLN TASIK UTAMA 9", "city": "KL",
             "state": None, "postal_code": "57000", "country": None}
-    r = compare(pred, "13, jln tasik utama 8 57000 kl", MatchRule.ADDRESS)
+    r = compare(pred, "13, jln tasik utama 8 57000 kl", MatchRule.ADDRESS_RENDERINGS)
     assert not r.matched and not r.exact
 
 
@@ -429,8 +429,8 @@ def test_1_12_comparison_forms_agree_with_the_verdict():
     pred = {"address": "13, JLN TASIK UTAMA 8, MEDAN NIAGA DAMAI SG BESI",
             "city": "KL", "state": "KL", "postal_code": "57000", "country": None}
     gt = "13, jln tasik utama 8 medan niaga damai sg besi 57000 kl"
-    p, t = comparison_forms(pred, gt, MatchRule.ADDRESS)
-    assert compare(pred, gt, MatchRule.ADDRESS).exact
+    p, t = comparison_forms(pred, gt, MatchRule.ADDRESS_RENDERINGS)
+    assert compare(pred, gt, MatchRule.ADDRESS_RENDERINGS).exact
     assert p == t, (p, t)
 
 
@@ -440,3 +440,26 @@ def test_1_12_fatura_split_address_is_unchanged():
     split = {"address": "16424 Timothy Mission", "city": "Markville",
              "state": "AK", "postal_code": "58294", "country": "US"}
     assert compare(split, GT_BLOCK, MatchRule.ADDRESS).exact
+
+
+def test_1_12_is_not_applied_under_the_frozen_invoice_rule():
+    """The frozen invoice map never adopted 1.12, so plain ADDRESS must not de-duplicate or try
+    the third order -- otherwise the published FATURA address figures move."""
+    from core.matching import compare, MatchRule
+    dup = {"address": "13, JLN TASIK UTAMA 8, MEDAN NIAGA DAMAI SG BESI",
+           "city": "KL", "state": "KL", "postal_code": "57000", "country": None}
+    assert not compare(dup, "13, jln tasik utama 8 medan niaga damai sg besi 57000 kl",
+                       MatchRule.ADDRESS).exact
+    my = {"address": "3RD FLR, AEON TAMAN MALURI SC, JLN JEJAKA, TAMAN MALURI",
+          "city": "CHERAS", "state": "KUALA LUMPUR", "postal_code": "55100", "country": None}
+    assert not compare(my, "3rd flr, aeon taman maluri sc jln jejaka, taman maluri cheras, "
+                           "55100 kuala lumpur", MatchRule.ADDRESS).exact
+
+
+def test_address_rule_follows_the_doc_type():
+    """Invoices score addresses under ADDRESS, receipts under ADDRESS_RENDERINGS."""
+    from core.matching import rule_for, MatchRule
+    import doctypes
+    path = "parties.seller.addressStructured"
+    assert rule_for(path, "str", doctypes.get("invoice")) is MatchRule.ADDRESS
+    assert rule_for(path, "str", doctypes.get("receipt")) is MatchRule.ADDRESS_RENDERINGS

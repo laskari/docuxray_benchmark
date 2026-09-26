@@ -82,7 +82,8 @@ class MatchRule(str, Enum):
     ENUM = "enum"                 # exact; reported separately
     BOOL = "bool"
     TEXT = "text"                 # names, memos -- three tiers reported
-    ADDRESS = "address"           # multi-line block -- three tiers reported
+    ADDRESS = "address"           # multi-line block, two component orders (frozen invoice map)
+    ADDRESS_RENDERINGS = "address_renderings"  # ADDRESS plus contract 1.12's renderings
     PHONE = "phone"
     EMAIL = "email"
     CURRENCY = "currency"
@@ -399,6 +400,27 @@ def _convention_address(pred_form: str, truth_form: str) -> bool:
     return COUNTRY_LONG_FORM.get(tt[i]) == pt[i]
 
 
+def _address_rule(spec) -> MatchRule:
+    """ADDRESS_RENDERINGS where the doc type's map adopted contract 1.12, ADDRESS otherwise."""
+    return MatchRule.ADDRESS_RENDERINGS if spec.address_renderings else MatchRule.ADDRESS
+
+
+def _address_forms(value, rule: MatchRule) -> set:
+    """The comparison-ready renderings of a predicted address that `rule` accepts.
+
+    ADDRESS is the rule the frozen invoice map was published under: the components merged in
+    the US order and in the postcode-first order, nothing else. ADDRESS_RENDERINGS is map
+    contract 1.12, which adds a third order and de-duplicated renderings -- see
+    address_renderings(). Contract 1.12 was written and measured for SROIE and is adopted per
+    doc type (DocTypeSpec.address_renderings), so it can never move a published invoice figure.
+    """
+    if rule is MatchRule.ADDRESS_RENDERINGS:
+        return address_renderings(value)
+    merged = (normalise_address_compare(merge_address_components(value, alt_order=alt))
+              for alt in (False, True))
+    return {f for f in merged if f}
+
+
 def rule_for(path: str, declared_type: str, spec=None) -> MatchRule:
     """Derive the match rule from the generated schema type plus the doc type's own leaf sets.
 
@@ -425,7 +447,7 @@ def rule_for(path: str, declared_type: str, spec=None) -> MatchRule:
     if leaf in spec.date_leaves:
         return MatchRule.DATE_RAW
     if _ADDRESS_HINT.search(path):
-        return MatchRule.ADDRESS
+        return _address_rule(spec)
     if leaf == "phone":
         return MatchRule.PHONE
     if leaf == "email":
@@ -677,7 +699,7 @@ def _compare(prediction: Any, truth: Any, rule: MatchRule) -> MatchResult:
     # number. Since contract 1.14 the threshold is not unused -- it decides the LENIENT column,
     # which is reported beside the exact one and never replaces it, so --anls-threshold moves
     # that column alone. `match_policy` remains inert for TEXT and ADDRESS by design.
-    if rule is MatchRule.ADDRESS:
+    if rule in (MatchRule.ADDRESS, MatchRule.ADDRESS_RENDERINGS):
         # Merge the model's five components into one string (Q2, Naveen 2026-09-01) and compare
         # against the whole GT block. The merge joins on whitespace (Naveen 2026-09-09).
         #
@@ -688,11 +710,10 @@ def _compare(prediction: Any, truth: Any, rule: MatchRule) -> MatchResult:
         # scores every merged address wrong (measured: 0.00% exact). Everything else stays:
         # '-', '/', '#', '&' and brackets are part of an address, and collapsing them let
         # "1851-a" and "1851 a" score as the same place. See normalise_address_compare.
-        # Map contract 1.12: the prediction is rendered every admissible way -- three component
-        # orders x {as emitted, de-duplicated} -- and each is compared for EXACT equality.
-        # address_renderings() carries the reasoning and the measurement.
+        # Every rendering the rule admits is compared for EXACT equality; _address_forms()
+        # says which renderings each of the two address rules admits.
         t = normalise_address_compare(merge_address_components(truth))
-        forms = address_renderings(prediction)
+        forms = _address_forms(prediction, rule)
 
         exact = (t or "") in forms if t else not forms
         score = max((anls(f, t) for f in forms), default=anls(None, t))
@@ -718,15 +739,15 @@ def _compare(prediction: Any, truth: Any, rule: MatchRule) -> MatchResult:
         # `truth in prediction` test matches across word boundaries and would score "MART"
         # inside "SUPERMARKET" as the model emitting the value.
         #
-        # Every rendering is tried, not just the closest, so containment inherits contract
-        # 1.12's promise that the model is not scored on which component it filed a token in.
+        # Every rendering is tried, not just the closest, so the model is not scored on which
+        # component it filed a token in.
         t_tokens = (t or "").split()
         contained = exact or any(_contains_token_run(f.split(), t_tokens) for f in forms)
         # LENIENT, contract 1.17: containment, plus exact equality once both sides shed a
         # printed registration number. No ANLS -- see strip_store_number.
         t_bare = normalise_address_compare(
             merge_address_components(_strip_address_store_numbers(truth)))
-        bare_forms = address_renderings(_strip_address_store_numbers(prediction))
+        bare_forms = _address_forms(_strip_address_store_numbers(prediction), rule)
         lenient = contained or ((t_bare or "") in bare_forms if t_bare else not bare_forms)
     else:
         p, t = normalise_string(prediction), normalise_string(truth)
@@ -759,14 +780,17 @@ def _compare(prediction: Any, truth: Any, rule: MatchRule) -> MatchResult:
         # Contract 1.17 for TEXT: the same store-number strip, on a flat string.
         lenient = contained or (normalise_string(strip_store_number(prediction))
                                 == normalise_string(strip_store_number(truth)))
-    if rule in (MatchRule.TEXT, MatchRule.ADDRESS, MatchRule.TEXT_SUPERSET):
+    if rule in (MatchRule.TEXT, MatchRule.ADDRESS, MatchRule.ADDRESS_RENDERINGS,
+                MatchRule.TEXT_SUPERSET):
         # Returned BEFORE _apply_policy, so --match-policy threshold cannot reach either rule.
         # The ANLS is still computed and carried on `score` so the report can show HOW CLOSE a
         # miss was; since contract 1.17 it decides NOTHING, on any rule.
         return MatchResult(matched=exact, exact=exact, score=score,
                            token_f1=token_f1(p, t),
                            reason="" if exact else f"not exact (anls {score:.3f})",
-                           convention=(convention if rule is MatchRule.ADDRESS else exact),
+                           convention=(convention if rule in (MatchRule.ADDRESS,
+                                                              MatchRule.ADDRESS_RENDERINGS)
+                                       else exact),
                            contained=contained,
                            lenient=lenient)
     res = MatchResult(
@@ -840,13 +864,13 @@ def comparison_forms(prediction: Any, truth: Any, rule: MatchRule) -> Tuple[str,
         return tuple("" if _empty(v) else (normalise_phone_compare(v) or "")
                      for v in (prediction, truth))
 
-    if rule is MatchRule.ADDRESS:
+    if rule in (MatchRule.ADDRESS, MatchRule.ADDRESS_RENDERINGS):
         t = normalise_address_compare(merge_address_components(truth)) or ""
         if _empty(prediction) and not isinstance(prediction, dict):
             return "", t
-        forms = address_renderings(prediction)
+        forms = _address_forms(prediction, rule)
         # Show the rendering the verdict was taken from: the matching one if any matches,
-        # otherwise the closest (map contract 1.12, same set as _compare).
+        # otherwise the closest (the same set _compare tests).
         if t in forms:
             return t, t
         return max(forms, key=lambda f: anls(f, t), default=""), t
@@ -1064,7 +1088,7 @@ def load_rule_registry(tsv_path: str, spec=None) -> Dict[str, MatchRule]:
             if ".addressStructured." in path:
                 obj, _, leaf = path.rpartition(".")
                 if leaf in ADDRESS_COMPONENTS:
-                    registry[obj] = MatchRule.ADDRESS
+                    registry[obj] = _address_rule(spec)
                     consumed.add(path)
     for path, kind in types.items():
         if path in consumed or path.rsplit(".", 1)[-1] in spec.excluded_leaves:

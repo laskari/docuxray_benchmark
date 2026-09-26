@@ -73,6 +73,14 @@ class DocTypeSpec:
     this decides whether the second is aggregated and reported. CORD and DOCILE leave it off
     and their results are byte-identical."""
 
+    address_renderings: bool = False
+    """Compare addresses under map contract 1.12 (MatchRule.ADDRESS_RENDERINGS): a third
+    component order and de-duplicated renderings, on top of the two orders every doc type gets.
+
+    Off by default because the frozen invoice map never adopted 1.12 -- the FATURA figures were
+    published without it, and turning it on moves them (seller address +0.18pp exact). Receipts
+    set it: 1.12 was written and measured for SROIE's Malaysian address blocks."""
+
     charge_label_paths: FrozenSet[str] = frozenset()
     """Row leaves holding a charge LABEL -- a charge name and a printed rate in one string --
     compared as those two facts rather than as one string (map contract 1.10, see
@@ -161,6 +169,9 @@ RECEIPT = DocTypeSpec(
     # TEXT_CONTAINED today; that rule is kept because it is the right one for a merged target --
     # a GT fact the pipeline splits across several fields -- which is what it was written for.
     contained_leaves=frozenset({"name"}),
+    # Map contract 1.12: SROIE prints postcode before state and spells city/state into the
+    # street block, so its addresses are compared under the extra renderings.
+    address_renderings=True,
     # ReceiptTotals.subtotal, .taxes and .otherCharges are LISTS on receipts where the invoice
     # equivalents are scalars. That is the single biggest structural difference between the two
     # types and the thing most likely to break a naive port.
