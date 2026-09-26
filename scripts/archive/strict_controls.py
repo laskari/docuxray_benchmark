@@ -7,13 +7,13 @@
 """
 from __future__ import annotations
 import json, pathlib, sys
-_ROOT = pathlib.Path(__file__).resolve().parent.parent
+_ROOT = pathlib.Path(__file__).resolve().parents[2]
 sys.path.insert(0, str(_ROOT))
 import doctypes, core.metrics as M
 from core.matching import MatchResult, MatchRule, compare as exact_compare
 from core.normalize import _Absent, normalise_money, normalise_phone, normalise_date, normalise_string
 from registry import gt_dir as _gt_dir
-from scripts.score_strict import strict_rules, score, ARMS
+from scripts.archive.score_strict import strict_rules, score, ARMS
 
 RUN = pathlib.Path(sys.argv[1] if len(sys.argv) > 1 else "runs/s42_main1000")
 ITERS = int(sys.argv[2]) if len(sys.argv) > 2 else 2000

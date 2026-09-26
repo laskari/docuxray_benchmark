@@ -191,7 +191,7 @@ CHANGELOG:
       means anything.
       THE FIELD: seller.name RAW 49.43% exact -> 97.28% contains, FINAL 51.20% -> 97.28%
       (sroie_full958, n=957). The gap is the printed registration number and the outlet the
-      model appends to the registered name -- the same population scripts/probe_seller_name_scope.py
+      model appends to the registered name -- the same population scripts/archive/probe_seller_name_scope.py
       was written to size. Exact asks whether the output emitted the name AND NOTHING ELSE;
       contains asks whether it emitted the name INTACT. Both are real questions about this
       field and neither is a substitute for the other.

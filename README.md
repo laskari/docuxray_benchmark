@@ -66,7 +66,8 @@ runs/<id>/  manifest, raw outputs, results, review sheet, and stages/<doc_id>/ w
             every intermediate written the moment it returns: 01_extract_raw,
             02_extraction_postprocessing (the judge's input), 03_judge_report,
             04_refined, 05_postprocessed, plus 00_status for live progress
-scripts/    environment checks, cost estimation and reconstruction
+scripts/    environment checks, cost estimation, dataset prep and reconstruction
+            archive/ holds one-off investigations kept for provenance (see its README)
 ```
 
 **The rule that keeps it portable:** if the answer differs between an invoice and a receipt it
@@ -74,11 +75,12 @@ belongs in `doctypes/`; if it is the same for both it belongs in `core/`.
 
 ## Status
 
-* Field map **v1.0-frozen** — 29 rows, all accepted (Naveen Kumar, Sandeep)
-* **154 tests passing**
+* Invoice field map **v1.0-frozen** — 29 rows, all accepted (Naveen Kumar, Sandeep)
+* Receipt field map **1.1-draft** — contracts 1.12–1.19 await two reviewers' sign-off
+* **464 tests**; baseline is 2 known failures on `$` currency handling (in-progress work)
 * Invoice ground truth built for 10,000 FATURA documents; 26 scoreable paths, 21 headline-eligible
-* Cost measured at **$0.0905/document** for both arms in one pass (~$118 for the full programme)
-* Receipt support: `DocTypeSpec` in place, awaiting a dataset adapter
+* Receipt datasets: SROIE (958, original ICDAR train/test split) and CORD-v2 (1,000)
+* Cost measured at **$0.0905/document** for both arms in one pass
 
 ## Current state of the invoice benchmark
 
@@ -126,9 +128,9 @@ were all broken. It has been **reconstructed from `ai/__pycache__/pipeline_core.
 and verified bytecode-identical to it**: same code objects, same constants, same instructions,
 same line numbers. Only comments and blank-line placement are new, because those leave no trace
 in bytecode — everything executable is exact, and `tests/test_pipeline_parity.py` passes against
-the real postprocessors. **It still needs committing to the ai_backend repo**, where it is
-untracked; a module the benchmark's two most consequential stages import must not survive only
-as build output.
+the real postprocessors. It is committed as ai_backend `3be4376`, but only on the local
+`report_bug_fixes` branch — **not on `main`**, so any other ai_backend checkout lacks it and
+every step fails at import. It must reach `main` before this harness can run from a clean clone.
 
 Added 2026-09-16: **batch mode** (`run.model_mode: batch`, or `--mode batch`). Extraction and
 the judge can go through the Gemini Batch API — one job for the whole plan at 50% of the

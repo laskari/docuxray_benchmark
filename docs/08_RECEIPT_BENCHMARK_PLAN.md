@@ -198,7 +198,7 @@ The real issue is narrower and still worth fixing. That shared file re-emits sam
 **requires `ground_truth.jsonl` to already exist**; it does not build it. The builder is
 `scripts/build_gt.py`. So `python steps/step2_ground_truth.py --doc-type receipt` — the command
 `docs/NEW_DOCTYPE_CHECKLIST.md` gave for step 2 — cannot produce ground truth, and SROIE's was
-in fact built by a one-off, `scripts/build_sroie_gt_and_samples.py`, which **skips
+in fact built by a one-off, `scripts/archive/build_sroie_gt_and_samples.py`, which **skips
 `check_contract`, skips the image-existence pre-flight, and does not write coverage**.
 
 CORD's ground truth was built through `build_gt.py` and did not repeat that. The checklist's

@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """Excel review workbook for the multi-rate tax slice.
 
-Reads runs/<run>/strict/multitax_<run>.json (written by scripts/score_multitax.py) and builds a
+Reads runs/<run>/strict/multitax_<run>.json (written by scripts/archive/score_multitax.py) and builds a
 hand-review workbook in the same house style as review_<run>.xlsx: one row per printed tax LINE,
 per-document and per-template rollups computed by formula, the shipped wire values for every
 document, and a yellow adjudication column.
@@ -352,7 +352,7 @@ def sheet_readme(wb, docs, run_id, n_line_rows):
          "once it is taken out.", 10, False),
         ("", 10, False),
         ("Source: runs/" + run_id + "/strict/multitax_" + run_id + ".json, written by "
-         "scripts/score_multitax.py. Regenerate both and this workbook stays in step.", 9, False),
+         "scripts/archive/score_multitax.py. Regenerate both and this workbook stays in step.", 9, False),
     ]
     for text, size, bold in lines:
         ws.append([text])

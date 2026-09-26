@@ -7,7 +7,7 @@ excluded on those documents in the main run, which reports them as a blind spot.
 the pipeline routes the lines into totals.otherCharges, the ground truth records them (map
 contract 1.8), and this scores that recovery.
 
-    python scripts/score_multitax.py runs/s42_main2000 [-o REPORT.md]
+    python scripts/archive/score_multitax.py runs/s42_main2000 [-o REPORT.md]
 
 Deliberately a SEPARATE report, not a 26th key in the main metric. The unit here is a printed
 tax LINE, not a document field, so folding it into a per-field micro figure would mix two
@@ -16,7 +16,7 @@ denominators. The main run is untouched by this script.
 from __future__ import annotations
 import argparse, collections, json, pathlib, sys
 
-_ROOT = pathlib.Path(__file__).resolve().parent.parent
+_ROOT = pathlib.Path(__file__).resolve().parents[2]
 sys.path.insert(0, str(_ROOT))
 
 from core.canonical import read_jsonl                                        # noqa: E402

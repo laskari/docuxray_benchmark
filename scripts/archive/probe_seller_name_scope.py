@@ -2,7 +2,7 @@
 """PROBE -- what would `parties.seller.name` score if the printed header text the model sweeps
 into it were removed before comparison?
 
-    python scripts/probe_seller_name_scope.py runs/sroie_t626
+    python scripts/archive/probe_seller_name_scope.py runs/sroie_t626
 
 Three stages, applied in order and reported CUMULATIVELY, so each one's marginal contribution
 and its harm are visible separately:
@@ -47,7 +47,7 @@ import pathlib
 import re
 import sys
 
-_ROOT = pathlib.Path(__file__).resolve().parent.parent
+_ROOT = pathlib.Path(__file__).resolve().parents[2]
 sys.path.insert(0, str(_ROOT))
 
 import doctypes                                                       # noqa: E402
